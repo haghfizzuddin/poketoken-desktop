@@ -42,7 +42,7 @@ def tracer(frame, event, arg):
 sys.settrace(tracer)
 threading.settrace(tracer)
 
-from poketoken import cli, companion as C, fmt, pokeapi, pricing, ui, usage as U  # noqa: E402
+from poketoken import cli, companion as C, fmt, notify, pokeapi, pricing, ui, usage as U  # noqa: E402
 
 M = 1_000_000
 problems: list[str] = []
@@ -143,6 +143,38 @@ print(" dex names:", [e.name(e.final_id) for e in comp.state.dex])
 assert C.MonState.from_dict({"pathIDs": []}) is None and C.DexEntry.from_dict({}) is None
 C.CompanionState.from_dict({"active": {"bogus": 1}, "dex": [{"bad": 1}], "inventory": {"x": "y"}})
 
+# ------------------------------------------------------------------ 4b. desktop notifications
+section("notify (recorded backend, nothing spawned)")
+ndir = scratch / "state-notify"; ndir.mkdir()
+launched: list[list[str]] = []
+class FakeProc:
+    returncode = 0
+    def wait(self, timeout=None): return 0
+saved_popen = notify.subprocess.Popen
+notify.subprocess.Popen = lambda argv, **kw: launched.append(list(argv)) or FakeProc()
+notify.set_enabled(ndir, False); assert not notify.enabled(ndir)
+assert not notify.notify_event({"kind": "hatch", "at": 0, "name": "A"}, ndir)     # off: nothing sent
+notify.set_enabled(ndir, True)
+for ev in ({"kind": "hatch", "at": 1, "name": "Bulbasaur", "shiny": True, "rarity": "rare", "nature": "jolly"},
+           {"kind": "evolve", "at": 2, "name": "Ivysaur", "stage": "2/3"},
+           {"kind": "graduate", "at": 3, "name": "Venusaur", "rarity": "rare", "shiny": False},
+           {"kind": "candy", "at": 4, "count": 2, "reason": "7-day streak"},
+           {"kind": "egg", "at": 5, "tier": "rare", "released": "Pidgey"},
+           {"kind": "buy", "at": 6, "item": "mint"}, {"kind": "mint", "at": 7, "nature": "bold"}):
+    notify.notify_event(ev, ndir)
+notify.send("waited", "exit code path", ndir, wait=1)
+(ndir / "toast-0.ps1").write_text("x"); os.utime(ndir / "toast-0.ps1", (0, 0)); notify.send("prune", "", ndir)
+notify.subprocess.Popen = lambda argv, **kw: (_ for _ in ()).throw(OSError("nope"))
+assert not notify.send("fails", "never raises", ndir)
+notify.subprocess.Popen = saved_popen
+saved_wsl, saved_which = notify.is_wsl, notify.shutil.which
+notify.is_wsl = lambda: False; notify.shutil.which = lambda n: None
+print(" no-backend probe:", notify.backend(), notify.powershell(), notify.send("x", "y", ndir))
+notify.is_wsl, notify.shutil.which = saved_wsl, saved_which
+print(f" recorded {len(launched)} launch(es); real backend here: {notify.backend()}; wsl={notify.is_wsl()}")
+if len(launched) != 7:
+    problems.append(f"notify: expected 7 recorded launches, got {len(launched)}")
+
 # ------------------------------------------------------------------ 5. CLI, every command
 section("cli commands")
 rich = scratch / "state-rich"
@@ -172,6 +204,11 @@ for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], [
     flag = "" if rc in (0, 1, None) else "  <-- unexpected rc"
     print(f" {' '.join(argv) or '(default)':<22} rc={rc} {out.strip().splitlines()[0][:70] if out.strip() else ''}{flag}")
     if flag:
+        problems.append(f"cli {' '.join(argv)} rc={rc}")
+for argv in (["notify"], ["notify", "status"], ["notify", "off"], ["notify", "on"], ["notify", "test"]):
+    rc, out = quiet(cli.main, base + argv)
+    print(f" {' '.join(argv):<22} rc={rc} {out.strip()[:70]}")
+    if rc != 0:
         problems.append(f"cli {' '.join(argv)} rc={rc}")
 # empty-dex / empty-bag paths
 for argv in (["dex"], ["bag"]):
@@ -261,6 +298,7 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
             win._event_text(ev)
         win._toast("hello"); win.render(); grab(win, "win-rich-toast")
         win._show_menu(Ev(x_root=100, y_root=100)); win.root.update(); win.menu.unpost()
+        win.toggle_notify(); win.toggle_notify(); win.root.update()
         win.bring_to_front(); win.root.update()
         win.set_tab("dex"); win.open_detail(18); win.root.update()
         t0 = time.time()
