@@ -173,10 +173,11 @@ class PokeAPI:
         self.cache_dir = Path(cache_dir)
         self.sprite_dir = Path(sprite_dir)
         self.timeout = timeout
-        for sub in ("species", "lines"):
+        for sub in ("species", "lines", "pokemon"):
             (self.cache_dir / sub).mkdir(parents=True, exist_ok=True)
         self.sprite_dir.mkdir(parents=True, exist_ok=True)
         self._species: dict[int, dict] = {}
+        self._pokemon: dict[int, dict] = {}
         self._lines: dict[int, EvoLine] = {}
         self._base_index: list[tuple[int, int]] | None = None
         self._opener = _build_opener()
@@ -239,6 +240,30 @@ class PokeAPI:
         }
         self._write_json(path, slim)
         self._species[sid] = slim
+        return slim
+
+    def pokemon(self, sid: int) -> dict:
+        """Slimmed `pokemon/{id}`: base stats, types, abilities, height (dm), weight (hg)."""
+        if sid in self._pokemon:
+            return self._pokemon[sid]
+        path = self.cache_dir / "pokemon" / f"{sid}.json"
+        cached = self._read_json(path)
+        if cached:
+            self._pokemon[sid] = cached
+            return cached
+        raw = self._get_json(f"{REST}/pokemon/{sid}/")
+        slim = {
+            "id": int(raw["id"]),
+            "name": raw.get("name", str(sid)),
+            "stats": {st["stat"]["name"]: int(st["base_stat"]) for st in raw.get("stats", [])},
+            "types": [t["type"]["name"] for t in sorted(raw.get("types", []), key=lambda t: t.get("slot", 0))],
+            "abilities": [{"name": a["ability"]["name"], "hidden": bool(a.get("is_hidden"))}
+                          for a in sorted(raw.get("abilities", []), key=lambda a: a.get("slot", 0))],
+            "height": int(raw.get("height", 0)),
+            "weight": int(raw.get("weight", 0)),
+        }
+        self._write_json(path, slim)
+        self._pokemon[sid] = slim
         return slim
 
     def line(self, base_id: int) -> EvoLine:

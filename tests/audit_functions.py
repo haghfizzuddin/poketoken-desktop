@@ -165,7 +165,7 @@ for junk in ("app.pid", "app.cmd", "app.log"):
 rich_ui = scratch / "state-rich-ui"                 # untouched copy for the window walkthrough
 shutil.copytree(rich, rich_ui)
 base = ["--state-dir", str(rich)]
-for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], ["dex"], ["shop"], ["shop", "--buy", "mint"],
+for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], ["stats"], ["dex"], ["shop"], ["shop", "--buy", "mint"],
              ["shop", "--buy", "egg-rare"], ["bag"], ["bag", "--use", "candy"], ["bag", "--use", "mint"],
              ["bag", "--use", "bogus"], ["debug"], []):
     rc, out = quiet(cli.main, base + argv)
@@ -174,7 +174,7 @@ for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], [
     if flag:
         problems.append(f"cli {' '.join(argv)} rc={rc}")
 # empty-dex / empty-bag paths
-for argv in (["dex"], ["bag"]):
+for argv in (["dex"], ["bag"], ["stats"]):
     rc, out = quiet(cli.main, ["--state-dir", str(egg_dir)] + argv)
     print(f" egg-state {argv[0]:<12} rc={rc} {out.strip()[:60]}")
 # watch: one iteration then Ctrl-C
@@ -257,11 +257,17 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win._act("bogus:x"); win._act("bogus:x")
         for ev in ({"kind": "hatch", "name": "A", "shiny": True}, {"kind": "evolve", "name": "B"},
                    {"kind": "graduate", "name": "C"}, {"kind": "buy", "item": "mint"}, {"kind": "egg"},
-                   {"kind": "mint", "nature": "bold"}, {"kind": "other"}):
+                   {"kind": "mint", "nature": "bold"}, {"kind": "dittoReveal", "disguise": "Pidgey", "shiny": True},
+                   {"kind": "candy", "count": 2, "reason": "7-day streak"}, {"kind": "other"}):
             win._event_text(ev)
         win._toast("hello"); win.render(); grab(win, "win-rich-toast")
         win._show_menu(Ev(x_root=100, y_root=100)); win.root.update(); win.menu.unpost()
         win.bring_to_front(); win.root.update()
+        win.open_species(2); win.root.update()                 # hero → detail with the stats card
+        t0 = time.time()
+        while win.busy and time.time() - t0 < 20:
+            win.root.update(); time.sleep(0.05)
+        win.render(); grab(win, "win-rich-stats")
         win.set_tab("dex"); win.open_detail(18); win.root.update()
         t0 = time.time()
         while win.busy and time.time() - t0 < 20:          # detail refresh fetches the species sprite

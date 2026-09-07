@@ -37,6 +37,8 @@ SHINY_CHARM_PRICE = 3_000_000_000
 FRESH_EGG_PRICE = 1_000_000_000
 SHINY_DENOMINATOR = 64
 SHINY_CHARM_DENOMINATOR = 48
+DITTO_DISGUISE_DENOMINATOR = 128       # common, multi-stage hatches only
+DITTO_ID = 132
 EGG_TIERS: list[str | None] = [None, "uncommon", "rare"]
 
 # activity history (phase 2): streaks and the weekly goal are computed from this
@@ -73,6 +75,51 @@ NATURES = ["hardy", "lonely", "brave", "adamant", "naughty",
            "timid", "hasty", "serious", "jolly", "naive",
            "modest", "mild", "quiet", "bashful", "rash",
            "calm", "gentle", "sassy", "careful", "quirky"]
+
+# stats (phase 2): six IVs 0-31 rolled at hatch, level 5..100 from growth, games' formula
+STAT_KEYS = ["hp", "attack", "defense", "special-attack", "special-defense", "speed"]
+STAT_LABELS = {"hp": "HP", "attack": "Attack", "defense": "Defense", "special-attack": "Sp. Atk",
+               "special-defense": "Sp. Def", "speed": "Speed"}
+# nature -> (raised stat, lowered stat); neutral natures raise and lower nothing
+NATURE_MODS: dict[str, tuple[str | None, str | None]] = {
+    "hardy": (None, None), "lonely": ("attack", "defense"), "brave": ("attack", "speed"),
+    "adamant": ("attack", "special-attack"), "naughty": ("attack", "special-defense"),
+    "bold": ("defense", "attack"), "docile": (None, None), "relaxed": ("defense", "speed"),
+    "impish": ("defense", "special-attack"), "lax": ("defense", "special-defense"),
+    "timid": ("speed", "attack"), "hasty": ("speed", "defense"), "serious": (None, None),
+    "jolly": ("speed", "special-attack"), "naive": ("speed", "special-defense"),
+    "modest": ("special-attack", "attack"), "mild": ("special-attack", "defense"),
+    "quiet": ("special-attack", "speed"), "bashful": (None, None), "rash": ("special-attack", "special-defense"),
+    "calm": ("special-defense", "attack"), "gentle": ("special-defense", "defense"),
+    "sassy": ("special-defense", "speed"), "careful": ("special-defense", "special-attack"), "quirky": (None, None),
+}
+IV_MAX = 31
+LEVEL_MIN, LEVEL_MAX = 5, 100
+# luck: consistency and efficiency during incubation, never raw volume
+LUCK_STREAK_ROLL = 7            # streak days for one bonus IV roll (two at double)
+LUCK_CACHE_RATIO_ROLL = 0.70    # 7-day mean cache-read ratio for one bonus roll (two at 0.90)
+LUCK_SHINY_STREAK = 7           # streak days that cut the shiny denominator by a quarter
+
+
+def ditto_disguise_hit(rarity: str, total_forms: int, roll: int) -> bool:
+    """A Ditto hides only in common lines that could evolve; 1 in 128 of those hatches."""
+    return rarity == "common" and total_forms >= 2 and roll % DITTO_DISGUISE_DENOMINATOR == 0
+
+
+def stat_value(key: str, base: int, iv: int, level: int, nature: str | None) -> int:
+    """Gen 3+ formula without EVs. HP has its own shape; nature is +10% / -10%."""
+    core = (2 * base + iv) * level // 100
+    if key == "hp":
+        return core + level + 10
+    up, down = NATURE_MODS.get(nature or "", (None, None))
+    mod = 1.1 if key == up else 0.9 if key == down else 1.0
+    return int((core + 5) * mod)
+
+
+def nature_mod(key: str, nature: str | None) -> int:
+    up, down = NATURE_MODS.get(nature or "", (None, None))
+    return 1 if key == up else -1 if key == down else 0
+
 
 ITEMS = {
     "rareCandy":  {"label": "Rare Candy",  "emoji": "🍬", "price": RARE_CANDY_PRICE,  "passive": False,
@@ -116,6 +163,19 @@ class MonState:
     total_forms: int = 1
     is_shiny: bool = False
     nature: str | None = None
+    ivs: dict[str, int] | None = None          # rolled at hatch (older saves: None → shown as unknown)
+    luck: dict | None = None                    # what influenced the roll, for display
+    ditto_disguise: int | None = None          # species this Ditto is posing as (None = not a Ditto)
+    ditto_revealed: bool = False
+
+    @property
+    def is_disguised(self) -> bool:
+        return self.ditto_disguise is not None and not self.ditto_revealed
+
+    @property
+    def shiny_visible(self) -> bool:
+        """A disguised Ditto hides its shininess until the reveal."""
+        return self.is_shiny and not self.is_disguised
 
     @property
     def current_id(self) -> int:
@@ -126,7 +186,9 @@ class MonState:
     def to_dict(self) -> dict:
         return {"baseID": self.base_id, "pathIDs": self.path_ids, "plannedPathIDs": self.planned_path_ids,
                 "stageIndex": self.stage_index, "usedAtStage": self.used_at_stage, "rarity": self.rarity,
-                "totalForms": self.total_forms, "isShiny": self.is_shiny, "nature": self.nature}
+                "totalForms": self.total_forms, "isShiny": self.is_shiny, "nature": self.nature,
+                "ivs": self.ivs, "luck": self.luck,
+                "dittoDisguise": self.ditto_disguise, "dittoRevealed": self.ditto_revealed}
 
     @staticmethod
     def from_dict(d) -> "MonState | None":
@@ -137,10 +199,17 @@ class MonState:
             planned = [int(x) for x in d.get("plannedPathIDs") or []] or list(path)
             stage = min(max(0, int(d["stageIndex"])), len(path) - 1)
             rarity = d["rarity"] if d.get("rarity") in GRADUATION_TOTAL else "common"
+            ivs = d.get("ivs")
+            ivs = ({k: int(v) for k, v in ivs.items() if k in STAT_KEYS}
+                   if isinstance(ivs, dict) and all(k in ivs for k in STAT_KEYS) else None)
+            luck = d.get("luck") if isinstance(d.get("luck"), dict) else None
+            dd = d.get("dittoDisguise")
             return MonState(int(d["baseID"]), path, planned, stage, int(d.get("usedAtStage", 0)), rarity,
                             int(d.get("totalForms") or len(planned)), bool(d.get("isShiny", False)),
-                            d.get("nature") if d.get("nature") in NATURES else None)
-        except (KeyError, TypeError, ValueError):
+                            d.get("nature") if d.get("nature") in NATURES else None, ivs, luck,
+                            int(dd) if isinstance(dd, int) and not isinstance(dd, bool) else None,
+                            bool(d.get("dittoRevealed", False)))
+        except (KeyError, TypeError, ValueError, AttributeError):
             return None
 
 
@@ -156,6 +225,7 @@ class DexEntry:
     nature: str | None = None
     names: dict[int, dict[str, str]] | None = None
     released_at: str | None = None
+    ivs: dict[str, int] | None = None
 
     @property
     def is_released(self) -> bool:
@@ -169,17 +239,20 @@ class DexEntry:
         return {"id": self.id, "baseID": self.base_id, "finalID": self.final_id, "chainOrder": self.chain_order,
                 "rarity": self.rarity, "caughtAt": self.caught_at, "isShiny": self.is_shiny, "nature": self.nature,
                 "names": {str(k): v for k, v in self.names.items()} if self.names else None,
-                "releasedAt": self.released_at}
+                "releasedAt": self.released_at, "ivs": self.ivs}
 
     @staticmethod
     def from_dict(d) -> "DexEntry | None":
         try:
             names = d.get("names")
             parsed = {int(k): dict(v) for k, v in names.items()} if isinstance(names, dict) else None
+            ivs = d.get("ivs")
+            ivs = ({k: int(v) for k, v in ivs.items() if k in STAT_KEYS}
+                   if isinstance(ivs, dict) and all(k in ivs for k in STAT_KEYS) else None)
             return DexEntry(str(d.get("id") or uuid.uuid4()), int(d["baseID"]), int(d["finalID"]),
                             [int(x) for x in d["chainOrder"]], d["rarity"] if d.get("rarity") in GRADUATION_TOTAL else "common",
                             d.get("caughtAt"), bool(d.get("isShiny", False)),
-                            d.get("nature") if d.get("nature") in NATURES else None, parsed, d.get("releasedAt"))
+                            d.get("nature") if d.get("nature") in NATURES else None, parsed, d.get("releasedAt"), ivs)
         except (KeyError, TypeError, ValueError, AttributeError):
             return None
 
@@ -265,6 +338,7 @@ class Companion:
         self.just_graduated: str | None = None
         self.event_until: float | None = None
         self.events: list[dict] = []
+        self.today: str = datetime.now().strftime("%Y-%m-%d")
         self.load()
 
     # ----------------------------------------------------------- persistence
@@ -389,6 +463,7 @@ class Companion:
     def update(self, today_tokens_by_provider: dict[str, int], today_date: str, burn_tier: str = "idle",
                limit_warning: bool = False, has_usage_data: bool = True) -> str:
         s = self.state
+        self.today = today_date
         today_tokens = sum(today_tokens_by_provider.values())
         has_current = has_usage_data and bool(today_tokens_by_provider)
 
@@ -441,6 +516,8 @@ class Companion:
             self.hatch_if_needed()
         if s.active is not None and self.line is None and self.ensure_line() is not None:
             self._process_thresholds(self.line)      # usage banked while offline may already evolve
+        if s.active is not None and s.active.is_disguised and self.line is not None:
+            self._process_thresholds(self.line)      # a reveal that failed offline gets another go
         self.display_state = self.compute_state(burn_tier, limit_warning, has_usage_data, today_tokens)
         self.save()
         return self.display_state
@@ -479,6 +556,11 @@ class Companion:
             node = line.tree.find(a.current_id)
             if node is None:
                 return
+            if a.is_disguised:
+                if not self.reveal_ditto():
+                    return                       # line fetch failed: keep the usage, retry next tick
+                line = self.line
+                continue
             if not node.children:
                 self.graduate()
                 return
@@ -511,6 +593,33 @@ class Companion:
             plan.append(node.species_id)
         return plan
 
+    def reveal_ditto(self) -> bool:
+        """The disguise drops at the first evolution threshold: the Pokémon becomes Ditto (its own
+        rarity, one form), keeps shiny/nature/IVs, and the threshold overflow carries over."""
+        a = self.state.active
+        if a is None or not a.is_disguised:
+            return False
+        try:
+            ditto = self.api.line(DITTO_ID)
+        except PokeAPIError as e:
+            self.log(f"ditto reveal: line fetch failed: {e}")
+            return False
+        thr = phase_threshold(a.rarity, a.total_forms, a.stage_index)
+        disguise_name = self.display_name()
+        a.used_at_stage = max(0, a.used_at_stage - thr)
+        a.base_id = ditto.base_id
+        a.path_ids = [ditto.base_id]
+        a.planned_path_ids = self._make_plan(ditto.tree, ditto.base_id)
+        a.stage_index = 0
+        a.rarity = ditto.rarity
+        a.total_forms = len(a.planned_path_ids)
+        a.ditto_revealed = True
+        self.line = ditto
+        self.just_evolved_to = ditto.name(ditto.base_id, self.state.language)
+        self.event_until = self.clock() + 5
+        self._emit("dittoReveal", disguise=disguise_name, shiny=a.is_shiny)
+        return True
+
     def graduate(self) -> None:
         a = self.state.active
         if a is None:
@@ -521,7 +630,8 @@ class Companion:
         self.state.dex.append(DexEntry(
             id=str(uuid.uuid4()), base_id=a.base_id, final_id=final_id, chain_order=list(a.path_ids),
             rarity=a.rarity, caught_at=_now_iso(), is_shiny=a.is_shiny, nature=a.nature,
-            names={sid: dict(line.names[sid]) for sid in a.path_ids if sid in line.names} if line else None))
+            names={sid: dict(line.names[sid]) for sid in a.path_ids if sid in line.names} if line else None,
+            ivs=a.ivs))
         name = line.name(final_id, self.state.language) if line else f"#{final_id}"
         self.just_graduated = name
         self.event_until = self.clock() + 6
@@ -595,18 +705,21 @@ class Companion:
         s.egg_usage = 0
         s.egg_tier = None
         s.pending_hatch_id = None
-        denom = SHINY_CHARM_DENOMINATOR if self.owns_shiny_charm else SHINY_DENOMINATOR
-        is_shiny = self.rng.getrandbits(64) % denom == 0
+        luck = self.luck_signals(self.today)
+        is_shiny = self.rng.getrandbits(64) % luck["shinyDenominator"] == 0
         nature = self.rng.choice(NATURES)
+        ivs = self.roll_ivs(luck["bonusRolls"])
         plan = self._make_plan(line.tree, line.base_id)
+        disguise = line.base_id if ditto_disguise_hit(line.rarity, len(plan), self.rng.getrandbits(64)) else None
         s.active = MonState(base_id=line.base_id, path_ids=[line.base_id], planned_path_ids=plan,
                             stage_index=0, used_at_stage=0, rarity=line.rarity, total_forms=len(plan),
-                            is_shiny=is_shiny, nature=nature)
+                            is_shiny=is_shiny, nature=nature, ivs=ivs, luck=luck, ditto_disguise=disguise)
         self.line = line
         self.just_evolved_to = None
         self.event_until = self.clock() + 4
         self._emit("hatch", species=line.base_id, name=line.name(line.base_id, s.language),
-                   rarity=line.rarity, shiny=is_shiny, nature=nature, forms=len(plan))
+                   rarity=line.rarity, shiny=is_shiny and disguise is None, nature=nature, forms=len(plan),
+                   ivs=sum(ivs.values()), bonus_rolls=luck["bonusRolls"])
         if overflow > 0:
             self.apply_usage(overflow)
         self.save()
@@ -622,6 +735,58 @@ class Companion:
         if not has_usage_data or today == 0:
             return "sleep"
         return {"idle": "idle", "normal": "working"}.get(burn_tier, "focus")
+
+    # --------------------------------------------------------- luck & stats
+    def luck_signals(self, today: str) -> dict:
+        """Consistency and efficiency at hatch time → bonus IV rolls and better shiny odds."""
+        streak, _, _ = self.streak(today)
+        d = date.fromisoformat(today)
+        ratios = [float(self.state.history.get((d - timedelta(days=i)).isoformat(), {}).get("cacheRatio", 0.0))
+                  for i in range(7) if self.day_tokens((d - timedelta(days=i)).isoformat()) > 0]
+        cache_ratio = round(sum(ratios) / len(ratios), 3) if ratios else 0.0
+        bonus = (1 if streak >= LUCK_STREAK_ROLL else 0) + (1 if streak >= 2 * LUCK_STREAK_ROLL else 0)
+        bonus += (1 if cache_ratio >= LUCK_CACHE_RATIO_ROLL else 0) + (1 if cache_ratio >= 0.90 else 0)
+        denom = SHINY_CHARM_DENOMINATOR if self.owns_shiny_charm else SHINY_DENOMINATOR
+        if streak >= LUCK_SHINY_STREAK:
+            denom = max(1, denom * 3 // 4)
+        return {"streak": streak, "cacheRatio": cache_ratio, "bonusRolls": bonus,
+                "shinyDenominator": denom, "charm": self.owns_shiny_charm}
+
+    def roll_ivs(self, bonus_rolls: int) -> dict[str, int]:
+        """Each IV is the best of 1 + bonus_rolls uniform rolls (a floor-raiser, never a cap)."""
+        return {k: max(self.rng.randrange(IV_MAX + 1) for _ in range(1 + max(0, bonus_rolls))) for k in STAT_KEYS}
+
+    def total_progress(self) -> float:
+        a = self.state.active
+        if a is None:
+            return 0.0
+        done = sum(phase_threshold(a.rarity, a.total_forms, i) for i in range(a.stage_index))
+        return min(1.0, (done + a.used_at_stage) / GRADUATION_TOTAL[a.rarity])
+
+    def level(self) -> int:
+        return LEVEL_MIN + int(round((LEVEL_MAX - LEVEL_MIN) * self.total_progress()))
+
+    @staticmethod
+    def stats_rows(meta: dict, ivs: dict[str, int] | None, level: int, nature: str | None) -> list[dict]:
+        rows = []
+        for k in STAT_KEYS:
+            base = int(meta.get("stats", {}).get(k, 0))
+            iv = None if ivs is None else int(ivs.get(k, 0))
+            rows.append({"key": k, "label": STAT_LABELS[k], "base": base, "iv": iv,
+                         "value": stat_value(k, base, iv if iv is not None else 0, level, nature),
+                         "mod": nature_mod(k, nature)})
+        return rows
+
+    def stats_view(self, meta: dict) -> dict | None:
+        """Stats card data for the active Pokémon (meta = PokeAPI.pokemon(current_id))."""
+        a = self.state.active
+        if a is None or not meta or int(meta.get("id", -1)) != a.current_id:
+            return None
+        lvl = self.level()
+        return {"level": lvl, "rows": self.stats_rows(meta, a.ivs, lvl, a.nature), "types": list(meta.get("types", [])),
+                "abilities": list(meta.get("abilities", [])), "height_m": meta.get("height", 0) / 10,
+                "weight_kg": meta.get("weight", 0) / 10, "nature": a.nature, "ivs": a.ivs, "luck": a.luck,
+                "iv_total": sum(a.ivs.values()) if a.ivs else None}
 
     # ------------------------------------------------------------- history
     def record_history(self, day_rows: dict[str, dict], today: str, backfill: bool = False) -> None:

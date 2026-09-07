@@ -293,3 +293,61 @@ class UsageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DittoTests(unittest.TestCase):
+    def test_hit_rule(self):
+        self.assertTrue(C.ditto_disguise_hit("common", 2, 128))
+        self.assertFalse(C.ditto_disguise_hit("common", 2, 129))
+        self.assertFalse(C.ditto_disguise_hit("common", 1, 128))
+        self.assertFalse(C.ditto_disguise_hit("rare", 3, 128))
+
+    def test_disguise_reveals_at_first_threshold_and_hides_shiny(self):
+        comp, api, _, _ = make(rng_seed=4)
+        api.lines[132] = EvoLine(132, EvoNode(132), "rare", {132: {"en": "Ditto"}})
+        p = U.PROVIDER_ID
+        comp.update({p: 10 * M}, "2026-09-07")
+        comp.state.pending_hatch_id = 16                      # Pidgey: common, 3 forms
+        comp.rng.getrandbits = lambda n: 0                    # every roll hits: shiny AND ditto
+        comp.update({p: 16 * M}, "2026-09-07")
+        a = comp.state.active
+        self.assertEqual(a.base_id, 16)
+        self.assertTrue(a.is_shiny)
+        self.assertEqual(a.ditto_disguise, 16)
+        self.assertTrue(a.is_disguised)
+        self.assertFalse(a.shiny_visible)                     # hidden while disguised
+        hatch = [e for e in comp.drain_events() if e["kind"] == "hatch"][0]
+        self.assertFalse(hatch["shiny"])
+        thr = C.phase_threshold("common", 3, 0)
+        comp.update({p: 16 * M + thr + 5 * M}, "2026-09-07")  # crosses the first evolution threshold
+        a = comp.state.active
+        self.assertEqual(a.base_id, 132)
+        self.assertTrue(a.ditto_revealed)
+        self.assertFalse(a.is_disguised)
+        self.assertTrue(a.shiny_visible)
+        self.assertEqual(a.rarity, "rare")
+        self.assertEqual(a.total_forms, 1)
+        self.assertEqual(a.used_at_stage, 6 * M)             # 5M past the threshold + 1M hatch overflow
+        kinds = [e["kind"] for e in comp.drain_events()]
+        self.assertIn("dittoReveal", kinds)
+        self.assertNotIn("evolve", kinds)
+        self.assertEqual(comp.display_name(), "Ditto")
+
+    def test_reveal_survives_offline(self):
+        comp, api, _, _ = make(rng_seed=4)
+        api.lines[132] = EvoLine(132, EvoNode(132), "rare", {132: {"en": "Ditto"}})
+        p = U.PROVIDER_ID
+        comp.update({p: 10 * M}, "2026-09-07")
+        comp.state.pending_hatch_id = 16
+        comp.rng.getrandbits = lambda n: 0
+        comp.update({p: 16 * M}, "2026-09-07")
+        thr = C.phase_threshold("common", 3, 0)
+        real_line = api.line
+        api.line = lambda sid: (_ for _ in ()).throw(PokeAPIError("offline")) if sid == 132 else real_line(sid)
+        comp.update({p: 16 * M + thr + M}, "2026-09-07")
+        self.assertTrue(comp.state.active.is_disguised)      # kept, not lost
+        self.assertEqual(comp.state.active.used_at_stage, thr + 2 * M)   # incl. 1M hatch overflow
+        api.line = real_line
+        comp.update({p: 16 * M + thr + 2 * M}, "2026-09-07")
+        self.assertEqual(comp.state.active.base_id, 132)
+        self.assertEqual(comp.state.active.used_at_stage, 3 * M)

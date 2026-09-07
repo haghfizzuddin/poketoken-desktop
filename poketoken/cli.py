@@ -77,7 +77,7 @@ class App:
         else:
             a = s.active
             name = c.display_name()
-            shiny = " ✨shiny" if a.is_shiny else ""
+            shiny = " ✨shiny" if a.shiny_visible else ""
             nature = f" · {a.nature.title()}" if a.nature else ""
             out.append(f"{C.STATE_EMOJI.get(st, '🐾')}  {name}{shiny}  [{RARITY_EMOJI[a.rarity]} {a.rarity}{nature}]  "
                        f"stage {c.stage_text}  ·  {st}")
@@ -118,7 +118,7 @@ class App:
             head = f"{emoji} egg {fmt.percent(c.egg_progress * 100)}"
         else:
             a = s.active
-            head = f"{emoji} {c.display_name()}{'✨' if a.is_shiny else ''} {c.stage_text} {fmt.percent(c.progress * 100)}"
+            head = f"{emoji} {c.display_name()}{'✨' if a.shiny_visible else ''} {c.stage_text} {fmt.percent(c.progress * 100)}"
         parts = [head, f"{fmt.compact(snap.today.total)} {fmt.cost_compact(snap.today.cost)}"]
         if snap.tokens_per_minute and snap.tokens_per_minute > 1000:
             parts.append(f"{fmt.compact(int(snap.tokens_per_minute))}/min")
@@ -183,6 +183,45 @@ def cmd_history(app: App, args) -> int:
     print(f"\n★ = counts toward the streak (≥ {fmt.compact(C.STREAK_MIN_TOKENS)})")
     print(app.streak_line(snap.today_date))
     print(app.goal_line(snap.today_date))
+    return 0
+
+
+TYPE_ABBR = {"special-attack": "SpA", "special-defense": "SpD"}
+
+
+def stats_lines(app: App) -> list[str]:
+    c, s = app.companion, app.companion.state
+    a = s.active
+    if a is None:
+        return ["No Pokémon yet — the egg has no stats."]
+    try:
+        meta = app.api.pokemon(a.current_id)
+    except Exception as e:  # noqa: BLE001 — PokeAPIError or a cache problem
+        return [f"stats unavailable: {e}"]
+    v = c.stats_view(meta)
+    if v is None:
+        return ["stats unavailable"]
+    out = [f"{c.display_name()}{' ✨' if a.shiny_visible else ''}  Lv {v['level']}  ·  {'/'.join(t.title() for t in v['types'])}"
+           f"  ·  {(a.nature or 'unknown').title()}  ·  {v['height_m']:.1f} m · {v['weight_kg']:.1f} kg"]
+    abil = ", ".join(x["name"].replace("-", " ").title() + (" (hidden)" if x["hidden"] else "") for x in v["abilities"])
+    out.append(f"    abilities: {abil}")
+    peak = max(r["value"] for r in v["rows"]) or 1
+    for r in v["rows"]:
+        mark = " +" if r["mod"] > 0 else " −" if r["mod"] < 0 else "  "
+        iv = f"IV {r['iv']:>2}" if r["iv"] is not None else "IV  ?"
+        out.append(f"    {r['label']:<8}{r['value']:>4}{mark}  {fmt.bar(r['value'] / peak, 18)}  base {r['base']:>3}  {iv}")
+    if v["iv_total"] is not None:
+        out.append(f"    IV total {v['iv_total']}/186")
+    lk = v["luck"] or {}
+    if lk:
+        out.append(f"    luck at hatch: {lk.get('bonusRolls', 0)} bonus roll(s) · {lk.get('streak', 0)}-day streak · "
+                   f"{lk.get('cacheRatio', 0) * 100:.0f}% cache reads · shiny 1/{lk.get('shinyDenominator', '?')}")
+    return out
+
+
+def cmd_stats(app: App, args) -> int:
+    app.tick()
+    _print(stats_lines(app))
     return 0
 
 
@@ -308,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("refresh", help="single refresh tick (for cron/systemd timers)")
     hi = sub.add_parser("history", help="daily usage table, streak and weekly goal")
     hi.add_argument("-n", "--days", type=int, default=30)
+    sub.add_parser("stats", help="level, types, abilities and stats of your current Pokémon")
     sub.add_parser("dex", help="Pokédex / catch log")
     sh = sub.add_parser("shop", help="token shop")
     sh.add_argument("--buy", help="candy | mint | charm | egg | egg-uncommon | egg-rare")
@@ -333,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     app = App(args.state_dir)
     handler = {"status": cmd_status, "watch": cmd_watch, "statusline": cmd_statusline, "refresh": cmd_refresh,
                "dex": cmd_dex, "shop": cmd_shop, "bag": cmd_bag, "pet": cmd_pet, "debug": cmd_debug,
-               "history": cmd_history,
+               "history": cmd_history, "stats": cmd_stats,
                "app": cmd_app, "window": cmd_app, "ui": cmd_app, "open": cmd_app,
                "close": cmd_close, "toggle": cmd_toggle, None: cmd_status}[args.cmd]
     return handler(app, args)

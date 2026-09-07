@@ -43,6 +43,10 @@ STATE_LABEL = {"egg": "Incubating", "sleep": "Sleeping", "idle": "Idle", "workin
 SPEED = {"egg": None, "sleep": 2.5, "idle": 1.6, "working": 1.0, "focus": 0.6, "tired": 1.8, "levelUp": 0.5}
 FONT_PREFS = ["SF Pro Text", "Helvetica Neue", "Inter", "Segoe UI", "Ubuntu", "Liberation Sans", "DejaVu Sans"]
 TABS = [("home", "Home"), ("dex", "Pokédex"), ("shop", "Shop"), ("bag", "Bag")]
+TYPE_COLORS = {"normal": "#A8A77A", "fire": "#EE8130", "water": "#6390F0", "electric": "#E4B90E", "grass": "#7AC74C",
+               "ice": "#6FBFBC", "fighting": "#C22E28", "poison": "#A33EA1", "ground": "#D4A94A", "flying": "#A98FF3",
+               "psychic": "#F95587", "bug": "#A6B91A", "rock": "#B6A136", "ghost": "#735797", "dragon": "#6F35FC",
+               "dark": "#705746", "steel": "#8E8EB0", "fairy": "#D685AD"}
 SPRITE_BOX = 96
 FULL_GEOMETRY = "392x700"
 COMPACT_GEOMETRY = "272x352"
@@ -75,9 +79,9 @@ def resolve_sprites(app, extra: tuple = ()) -> dict:
         out[("static", sid, shiny)] = api.sprite(sid, animated=False, shiny=shiny)
     a = s.active
     if a is not None:
-        out[("anim", a.current_id, a.is_shiny)] = api.sprite(a.current_id, animated=True, shiny=a.is_shiny)
+        out[("anim", a.current_id, a.shiny_visible)] = api.sprite(a.current_id, animated=True, shiny=a.shiny_visible)
         for sid in a.path_ids[: a.stage_index + 1]:
-            out[("static", sid, a.is_shiny)] = api.sprite(sid, animated=False, shiny=a.is_shiny)
+            out[("static", sid, a.shiny_visible)] = api.sprite(sid, animated=False, shiny=a.shiny_visible)
     wanted: set[tuple[int, bool]] = set()
     for e in s.dex[-80:]:
         for sid in e.chain_order:
@@ -225,6 +229,7 @@ class PokeWindow:
         # Tk root, Tk would be torn down from a non-main thread (Tcl_AsyncDelete abort).
         app, q, lock = self.app, self.q, self.lock
         extra = ((self.detail, self._species_shiny(self.detail)),) if self.detail else ()
+        detail = self.detail
 
         def work():
             try:
@@ -232,7 +237,14 @@ class PokeWindow:
                     snap = app.tick()
                     events = app.companion.drain_events()
                 paths = resolve_sprites(app, extra)
-                q.put(("ok", {"snap": snap, "events": events, "paths": paths, "at": time.time()}))
+                meta: dict[int, dict] = {}
+                a = app.companion.state.active
+                for sid in {a.current_id if a else None, detail} - {None}:
+                    try:
+                        meta[sid] = app.api.pokemon(sid)
+                    except Exception as e:  # noqa: BLE001 — stats are optional; the card says so
+                        app.log(f"pokemon meta unavailable for {sid}: {e}")
+                q.put(("ok", {"snap": snap, "events": events, "paths": paths, "meta": meta, "at": time.time()}))
             except Exception as e:  # noqa: BLE001
                 q.put(("err", repr(e)))
 
@@ -289,6 +301,8 @@ class PokeWindow:
             return f"Nature is now {str(ev.get('nature', '')).title()}"
         if k == "candy":
             return f"+{ev.get('count')} Rare Candy · {ev.get('reason')}"
+        if k == "dittoReveal":
+            return f"It was a Ditto all along! ({ev.get('disguise')})" + ("  ✦ Shiny!" if ev.get("shiny") else "")
         return k
 
     def _toast(self, text: str, seconds: float = 4.0) -> None:
@@ -549,15 +563,20 @@ class PokeWindow:
         accent = STATE_COLOR.get(state, "blue")
 
         # hero card
-        card = self.card(x0, y, cw, 10)
+        hero_tag = ("hero",) if s.active else ()
+        card = self.card(x0, y, cw, 10, tags=hero_tag)
         cy = y + 12
         size = SPRITE_BOX * self.sprite_scale
-        self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.is_shiny)
-        self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="")
+        self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
+        self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="", tags=hero_tag)
+        if s.active:
+            self.c.tag_bind("hero", "<Button-1>", lambda e, sid=s.active.current_id: self.open_species(sid))
+            self._hand("hero")
+            self.text(x0 + cw - 16, y + 10, "Stats ›", "captionB", "blue", anchor="ne", tags=hero_tag)
         cy += size + 4
         name = comp.display_name()
         name_font = "title" if self.measure(name, "title") < cw - 40 else "title2"
-        if s.active and s.active.is_shiny:
+        if s.active and s.active.shiny_visible:
             tw = self.measure(name, name_font) + 6 + self.measure("✦", "title2")
             self.text(x0 + cw / 2 - tw / 2, cy, name, name_font, "label", anchor="nw")
             self.text(x0 + cw / 2 + tw / 2, cy + 3, "✦", "title2", "yellow", anchor="ne")
@@ -616,7 +635,7 @@ class PokeWindow:
                     self.text(cx, ty + 26, "?", "title2", "tertiary", anchor="center")
                     label = "???"
                 else:
-                    ph = self.img(self.payload["paths"].get(("static", sid, s.active.is_shiny)) if self.payload else None,
+                    ph = self.img(self.payload["paths"].get(("static", sid, s.active.shiny_visible)) if self.payload else None,
                                   52, "card")
                     if ph:
                         self.c.create_image(cx, ty + 26, image=ph)
@@ -701,7 +720,7 @@ class PokeWindow:
             a = s.active
             for sid in a.path_ids[: a.stage_index + 1]:
                 d = species.setdefault(sid, {"name": comp.line.name(sid, s.language), "rarity": a.rarity, "shiny": False, "raising": True})
-                d["shiny"] = d["shiny"] or a.is_shiny
+                d["shiny"] = d["shiny"] or a.shiny_visible
                 d["raising"] = True
         if not species:
             self.card(x0, y, cw, 140)
@@ -766,7 +785,12 @@ class PokeWindow:
         if any(e.is_shiny and sid in e.chain_order for e in s.dex):
             return True
         a = s.active
-        return bool(a and a.is_shiny and sid in a.path_ids[: a.stage_index + 1])
+        return bool(a and a.shiny_visible and sid in a.path_ids[: a.stage_index + 1])
+
+    def open_species(self, sid: int) -> None:
+        self.tab = "dex"
+        self._save_prefs()
+        self.open_detail(sid)
 
     def open_detail(self, sid: int) -> None:
         self.detail = sid
@@ -848,6 +872,9 @@ class PokeWindow:
                 self.c.tag_bind(tag, "<Button-1>", lambda e, c=cid: self.open_detail(c))
         y += 118 + 12
 
+        if raising and a and sid == a.current_id:
+            y = self.draw_stats_card(y, x0, cw)
+
         # records
         rows = []
         if raising and a:
@@ -869,6 +896,57 @@ class PokeWindow:
                 self.sep(x0 + 18, ry + 30, cw - 36)
             ry += 38
         return y + h + 12
+
+    def draw_stats_card(self, y, x0, cw) -> int:
+        """Level, types, abilities, size and the six stats of the active Pokémon."""
+        comp, s = self.app.companion, self.app.companion.state
+        a = s.active
+        meta = (self.payload or {}).get("meta", {}).get(a.current_id) if a else None
+        view = comp.stats_view(meta) if meta else None
+        card = self.card(x0, y, cw, 10)
+        cy = y + 12
+        self.text(x0 + 18, cy, "STATS", "captionB", "secondary")
+        if view is None:
+            self.text(x0 + cw - 18, cy, "loading…" if self.busy else "unavailable offline", "caption", "tertiary", anchor="ne")
+            cy += 30
+            self.fit_card(card, x0, y, cw, cy - y)
+            return cy + 12
+        self.text(x0 + cw - 18, cy - 2, f"Lv {view['level']}", "headline", "label", anchor="ne")
+        cy += 22
+        px = x0 + 18
+        for t in view["types"]:
+            px += self.pill(px, cy, t.title(), TYPE_COLORS.get(t, "gray")) + 6
+        nature = (view["nature"] or "").title()
+        self.text(x0 + cw - 18, cy + 3, f"{nature} · {view['height_m']:.1f} m · {view['weight_kg']:.1f} kg", "caption", "secondary", anchor="ne")
+        cy += 30
+        abil = ", ".join(x["name"].replace("-", " ").title() + (" (hidden)" if x["hidden"] else "") for x in view["abilities"])
+        self.text(x0 + 18, cy, self._ellipsize("Abilities: " + abil, "caption", cw - 36), "caption", "tertiary")
+        cy += 22
+        peak = max(r["value"] for r in view["rows"]) or 1
+        label_w = max(self.measure(r["label"], "caption") for r in view["rows"]) + 8
+        bar_x = x0 + 18 + label_w
+        bar_w = cw - 36 - label_w - 88
+        for r in view["rows"]:
+            colour = "green" if r["mod"] > 0 else "red" if r["mod"] < 0 else "blue"
+            self.text(x0 + 18, cy, r["label"], "caption", "secondary")
+            self.capsule(bar_x, cy + 4, bar_w, 6, r["value"] / peak, colour)
+            self.text(bar_x + bar_w + 10, cy - 1, str(r["value"]), "headline", "label")
+            iv = f"IV {r['iv']}" if r["iv"] is not None else "IV ?"
+            self.text(x0 + cw - 18, cy + 1, iv, "caption", "tertiary", anchor="ne")
+            cy += 22
+        cy += 4
+        lk = view["luck"] or {}
+        if view["iv_total"] is not None:
+            luck_txt = f"IV total {view['iv_total']}/186"
+            if lk:
+                luck_txt += (f" · {lk.get('bonusRolls', 0)} bonus roll{'s' if lk.get('bonusRolls', 0) != 1 else ''} at hatch "
+                             f"({lk.get('streak', 0)}-day streak, {lk.get('cacheRatio', 0) * 100:.0f}% cache)")
+            self.text(x0 + 18, cy, self._ellipsize(luck_txt, "caption", cw - 36), "caption", "tertiary")
+        else:
+            self.text(x0 + 18, cy, "IVs unknown — hatched before stats existed", "caption", "tertiary")
+        cy += 24
+        self.fit_card(card, x0, y, cw, cy - y)
+        return cy + 12
 
     # ----------------------------------------------------------------- shop
     def draw_shop(self, y, x0, cw) -> int:
@@ -966,12 +1044,12 @@ class PokeWindow:
         accent = STATE_COLOR.get(state, "blue")
         size = SPRITE_BOX * self.sprite_scale
         y = 10
-        self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.is_shiny)
+        self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
         self.sprite_item = self.c.create_image(w / 2, y + size / 2, image="")
         y += size
         name = comp.display_name()
-        self.text(w / 2, y, name + ("  ✦" if s.active and s.active.is_shiny else ""), "title2",
-                  "yellow" if s.active and s.active.is_shiny else "label", anchor="n")
+        self.text(w / 2, y, name + ("  ✦" if s.active and s.active.shiny_visible else ""), "title2",
+                  "yellow" if s.active and s.active.shiny_visible else "label", anchor="n")
         y += 26
         sub = f"Stage {s.active.stage_index + 1} of {s.active.total_forms} · " if s.active else ""
         sub += STATE_LABEL.get(state, state)
