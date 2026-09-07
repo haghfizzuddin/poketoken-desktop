@@ -366,8 +366,8 @@ def cmd_app(app: App, args) -> int:
         print("PokeToken is already open — brought it to the front.")
         return 0
     compact = bool(getattr(args, "compact", False))
-    if getattr(args, "detach", False):
-        argv = ["--state-dir", str(app.dir), "app", "-i", str(args.interval)]   # global option first
+    if not getattr(args, "fg", False):                     # background is the default; --fg attaches
+        argv = ["--state-dir", str(app.dir), "app", "--fg", "-i", str(args.interval)]   # global option first
         argv += ["--compact"] if compact else []
         argv += ["--dark"] if args.dark else ["--light"] if args.light else []
         pid = instance.spawn_detached(argv, app.dir)
@@ -400,7 +400,7 @@ def cmd_close(app: App, args) -> int:
 def cmd_toggle(app: App, args) -> int:
     if instance.running_pid(app.dir) is not None:
         return cmd_close(app, args)
-    args.detach = True
+    args.fg = False
     return cmd_app(app, args)
 
 
@@ -467,12 +467,13 @@ def main(argv: list[str] | None = None) -> int:
     bg = sub.add_parser("bag", help="inventory")
     bg.add_argument("--use", help="candy | mint")
     def window_flags(sp):
-        sp.add_argument("-d", "--detach", action="store_true", help="open in the background and return")
+        sp.add_argument("--fg", action="store_true", help="stay attached to the terminal (default: background)")
+        sp.add_argument("-d", "--detach", action="store_true", help=argparse.SUPPRESS)   # old spelling of the default
         sp.add_argument("--dark", action="store_true", help="dark appearance")
         sp.add_argument("--light", action="store_true", help="light appearance")
         sp.add_argument("-i", "--interval", type=int, default=30, help="refresh seconds")
 
-    ap = sub.add_parser("app", aliases=["window", "ui", "open"], help="open the live window (or bring it to front)")
+    ap = sub.add_parser("app", aliases=["window", "ui", "open"], help="open the live window in the background (or bring it to front)")
     ap.add_argument("--compact", action="store_true", help="start in the small companion-only view")
     window_flags(ap)
     pt = sub.add_parser("pet", help="same window, compact view")

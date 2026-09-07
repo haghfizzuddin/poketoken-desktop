@@ -236,13 +236,13 @@ def fake_run(self):
         self.root.update(); time.sleep(0.05)
     self.quit()
 ui.PokeWindow.run = fake_run
-for argv in (["app", "--light", "-i", "60"], ["pet", "--dark"]):
+for argv in (["app", "--fg", "--light", "-i", "60"], ["pet", "--fg", "--dark"]):
     rc, out = quiet(cli.main, base + argv)
     print(f" {' '.join(argv):<22} rc={rc}")
 ui.PokeWindow.run = saved_run
 # background window: detach → second `app` raises it → toggle closes it
-rc, out = quiet(cli.main, base + ["app", "--detach", "--light", "-i", "60"])
-print(f" app --detach            rc={rc} {out.strip()[:60]}")
+rc, out = quiet(cli.main, base + ["app", "--light", "-i", "60"])          # background is the default now
+print(f" app (background)        rc={rc} {out.strip()[:60]}")
 from poketoken import instance  # noqa: E402
 if instance.running_pid(rich) is None:
     problems.append("detached window did not register a pid")
@@ -309,19 +309,20 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win._show_menu(Ev(x_root=100, y_root=100)); win.root.update(); win.menu.unpost()
         win.toggle_notify(); win.toggle_notify(); win.root.update()
         win.bring_to_front(); win.root.update()
-        win.open_species(2); win.root.update()                 # hero → detail with the stats card
+        win.open_stats(); win.root.update()                    # hero → Stats sub-page
         t0 = time.time()
         while win.busy and time.time() - t0 < 20:
             win.root.update(); time.sleep(0.05)
         win.render(); grab(win, "win-rich-stats")
+        win.close_stats(); win.open_stats(); win.open_species(win.app.companion.state.active.current_id)   # "View in Pokédex"
         win.set_tab("dex"); win.open_detail(18); win.root.update()
         t0 = time.time()
         while win.busy and time.time() - t0 < 20:          # detail refresh fetches the species sprite
             win.root.update(); time.sleep(0.05)
         win.render(); grab(win, "win-rich-detail")
         win.open_detail(2); win.root.update(); win.close_detail()
-        win.set_sprite_scale(2); win.set_sprite_scale(3); win.root.update()
-        win.toggle_compact(); win.set_sprite_scale(2); win.set_sprite_scale(3); win.toggle_compact()   # compact resizes to default_geometry
+        win.set_sprite_box(256); win.set_sprite_box(384); win.root.update()
+        win.toggle_compact(); win.set_sprite_box(256); win.set_sprite_box(384); win.toggle_compact()   # compact resizes to default_geometry
         win.toggle_dark(); win.set_tab("home"); grab(win, "win-rich-dark"); win.toggle_dark()
         win.toggle_compact(); win.root.update(); win._show_menu(Ev(x_root=50, y_root=50)); win.menu.unpost()
         grab(win, "win-rich-compact"); win.toggle_compact()

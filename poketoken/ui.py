@@ -47,9 +47,29 @@ TYPE_COLORS = {"normal": "#A8A77A", "fire": "#EE8130", "water": "#6390F0", "elec
                "ice": "#6FBFBC", "fighting": "#C22E28", "poison": "#A33EA1", "ground": "#D4A94A", "flying": "#A98FF3",
                "psychic": "#F95587", "bug": "#A6B91A", "rock": "#B6A136", "ghost": "#735797", "dragon": "#6F35FC",
                "dark": "#705746", "steel": "#8E8EB0", "fairy": "#D685AD"}
-SPRITE_BOX = 96
+SPRITE_BOX = 96                     # native size class of the Gen-V sprites (used by previews)
+SPRITE_BOXES = (256, 320, 384, 448)  # fixed container sizes offered in the menu
+DEFAULT_SPRITE_BOX = 320            # the largest that fits the 392-wide window; bigger sizes widen it
+SPRITE_PAD = 12
+MINI_BOX = 128                      # stats page header sprite
 FULL_GEOMETRY = "392x700"
-COMPACT_GEOMETRY = "272x352"
+FULL_MARGIN = 56                    # window width needed beyond the sprite container in the full view
+PREFS_VERSION = 2
+
+
+def union_bbox(frames) -> tuple[int, int, int, int] | None:
+    """Bounding box of the visible pixels across every frame, so an animation keeps one scale."""
+    boxes = [b for b in (f.getbbox() for f in frames) if b]
+    if not boxes:
+        return None
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def fit_scale(w: int, h: int, target: int) -> int:
+    """Largest whole-number scale that keeps w×h inside target×target (0 = must downscale)."""
+    if w <= 0 or h <= 0:
+        return 1
+    return min(target // w, target // h)
 LINE_SPRITE = 52            # sprite size in the EVOLUTION LINE card
 PREVIEW_BLUR = 8.0          # Gaussian radius of the next form's preview at progress 0, for a LINE_SPRITE px sprite
 PREVIEW_DARK = 0.92         # how far its colours sit toward the silhouette at progress 0 (1 = solid)
@@ -142,11 +162,16 @@ class PokeWindow:
         self.interval = max(10, interval)
         self.prefs_file: Path = app.dir / "ui.json"
         prefs = self._load_prefs()
-        self.compact = compact if compact else bool(prefs.get("compact", False)) and compact
+        if prefs.get("version") != PREFS_VERSION:           # layout changed: drop old sizes, keep appearance
+            prefs = {"dark": prefs.get("dark", False), "version": PREFS_VERSION}
+            self._write_prefs(prefs)
+        self.compact = compact
         self.dark = bool(prefs.get("dark", False)) if dark is None else dark
         self.tab = "home"                                   # always open on Home
-        self.detail: int | None = None                      # species shown in the Pokédex detail page
-        self.sprite_scale = int(prefs["sprite_scale"]) if prefs.get("sprite_scale") in (2, 3, 4) else 3
+        self.detail: int | None = None                      # species shown in the Pokédex species page
+        self.stats_page = False                             # Home → Stats sub-page
+        self.sprite_box = int(prefs["sprite_box"]) if prefs.get("sprite_box") in SPRITE_BOXES else DEFAULT_SPRITE_BOX
+        self.sprite_draw_box = self.sprite_box              # box used by the sprite item on the current page
         self.sprite_subject: tuple = ("egg",)
         self.P = DARK if self.dark else LIGHT
 
@@ -205,8 +230,8 @@ class PokeWindow:
         self.menu.add_command(label="Dark appearance", command=self.toggle_dark)
         self.menu.add_command(label="Notifications: On", command=self.toggle_notify)
         size_menu = tk.Menu(self.menu, tearoff=0)
-        for n in (2, 3, 4):
-            size_menu.add_command(label=f"{n}×  ({SPRITE_BOX * n} px)", command=lambda n=n: self.set_sprite_scale(n))
+        for px in SPRITE_BOXES:
+            size_menu.add_command(label=f"{px} px", command=lambda px=px: self.set_sprite_box(px))
         self.menu.add_cascade(label="Sprite size", menu=size_menu)
         self.menu.add_separator()
         self.menu.add_command(label="Quit", command=self.quit, accelerator="Esc")
@@ -224,8 +249,11 @@ class PokeWindow:
             return {}
 
     def default_geometry(self) -> str:
-        size = SPRITE_BOX * self.sprite_scale
-        return f"{max(272, size + 64)}x{size + 176}" if self.compact else FULL_GEOMETRY
+        box = self.sprite_box
+        if self.compact:
+            return f"{max(272, box + 64)}x{box + 176}"
+        w, h = (int(v) for v in FULL_GEOMETRY.split("x"))
+        return f"{max(w, box + FULL_MARGIN)}x{h}"
 
     def _restore_geometry(self, prefs: dict) -> str:
         """Saved size for this view, unless it is too narrow for the current sprite scale."""
@@ -234,28 +262,34 @@ class PokeWindow:
             w = int(geo.split("x")[0])
         except ValueError:
             return self.default_geometry()
-        if self.compact and w < SPRITE_BOX * self.sprite_scale + 40:
-            return self.default_geometry()
+        need = self.sprite_box + (40 if self.compact else FULL_MARGIN)
+        if w < need:                                          # saved size too narrow for the container
+            return f"{need}x{geo.split('x')[1]}" if "x" in geo else self.default_geometry()
         return geo
 
-    def set_sprite_scale(self, n: int) -> None:
-        self.sprite_scale = n
+    def set_sprite_box(self, px: int) -> None:
+        self.sprite_box = px
         self.images.clear()
         self.sprite_key = None
         if self.compact:
             self.root.geometry(self.default_geometry())
+        elif self.root.winfo_width() < px + FULL_MARGIN:      # widen just enough for the container
+            self.root.geometry(f"{px + FULL_MARGIN}x{self.root.winfo_height()}")
         self._save_prefs()
         self.render()
 
-    def _save_prefs(self) -> None:
-        p = self._load_prefs()
-        p.update({"dark": self.dark, "tab": self.tab, "sprite_scale": self.sprite_scale})
-        if self.settled_geometry:
-            p["geometry_compact" if self.compact else "geometry_full"] = self.settled_geometry
+    def _write_prefs(self, p: dict) -> None:
         try:
             self.prefs_file.write_text(json.dumps(p))
         except OSError:
             pass
+
+    def _save_prefs(self) -> None:
+        p = self._load_prefs()
+        p.update({"dark": self.dark, "sprite_box": self.sprite_box, "version": PREFS_VERSION})
+        if self.settled_geometry:
+            p["geometry_compact" if self.compact else "geometry_full"] = self.settled_geometry
+        self._write_prefs(p)
 
     def _pick_font(self) -> str:
         fams = set(tkfont.families(self.root))
@@ -366,6 +400,7 @@ class PokeWindow:
     def set_tab(self, tab: str) -> None:
         self.tab = tab
         self.detail = None
+        self.stats_page = False
         self.armed = None
         self.c.yview_moveto(0)
         self._save_prefs()
@@ -601,6 +636,8 @@ class PokeWindow:
             y = self.draw_header(w)
             if self.tab == "dex" and self.detail is not None:
                 y = self.draw_detail(y, x0, cw)
+            elif self.tab == "home" and self.stats_page and self.app.companion.state.active:
+                y = self.draw_stats_page(y, x0, cw)
             else:
                 y = {"home": self.draw_home, "dex": self.draw_dex, "shop": self.draw_shop,
                      "bag": self.draw_bag}[self.tab](y, x0, cw)
@@ -659,11 +696,11 @@ class PokeWindow:
         hero_tag = ("hero",) if s.active else ()
         card = self.card(x0, y, cw, 10, tags=hero_tag)
         cy = y + 12
-        size = SPRITE_BOX * self.sprite_scale
+        size = self.sprite_draw_box = self.sprite_box
         self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
         self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="", tags=hero_tag)
         if s.active:
-            self.c.tag_bind("hero", "<Button-1>", lambda e, sid=s.active.current_id: self.open_species(sid))
+            self.c.tag_bind("hero", "<Button-1>", lambda e: self.open_stats())
             self._hand("hero")
             self.text(x0 + cw - 16, y + 10, "Stats ›", "captionB", "blue", anchor="ne", tags=hero_tag)
         cy += size + 4
@@ -751,16 +788,12 @@ class PokeWindow:
         self.text(x0 + 18, cy, fmt.compact(t.total) if t else "—", "num", "label")
         self.text(x0 + 18 + self.measure(fmt.compact(t.total) if t else "—", "num") + 8, cy + 20, "tokens", "sub", "secondary")
         self.text(x0 + cw - 18, cy + 8, fmt.cost(t.cost) if t else "—", "title", "green", anchor="ne")
-        cy += 48
+        cy += 46
         if t:
-            grid = [("Input", t.input), ("Output", t.output), ("Cache write", t.cache_write), ("Cache read", t.cache_read)]
-            colw = (cw - 36) / 2
-            for i, (lbl, val) in enumerate(grid):
-                gx = x0 + 18 + (i % 2) * colw
-                gy = cy + (i // 2) * 34
-                self.text(gx, gy, lbl, "caption", "secondary")
-                self.text(gx, gy + 12, fmt.compact(val), "headline", "label")
-            cy += 70
+            split = (f"in {fmt.compact(t.input)}  ·  out {fmt.compact(t.output)}  ·  "
+                     f"cache write {fmt.compact(t.cache_write)}  ·  cache read {fmt.compact(t.cache_read)}")
+            self.text(x0 + 18, cy, self._ellipsize(split, "caption", cw - 36), "caption", "secondary")
+            cy += 16
             if snap.models_today:
                 line = "  ·  ".join(f"{m.replace('claude-', '')} {fmt.compact(n)}" for m, n in list(snap.models_today.items())[:3])
                 self.text(x0 + 18, cy, self._ellipsize(line, "caption", cw - 36), "caption", "tertiary")
@@ -880,9 +913,24 @@ class PokeWindow:
         return bool(a and a.shiny_visible and sid in a.path_ids[: a.stage_index + 1])
 
     def open_species(self, sid: int) -> None:
+        """Jump to a species page in the Pokédex from anywhere."""
         self.tab = "dex"
-        self._save_prefs()
+        self.stats_page = False
         self.open_detail(sid)
+
+    def open_stats(self) -> None:
+        """Home → Stats sub-page for the Pokémon being raised."""
+        self.tab = "home"
+        self.detail = None
+        self.stats_page = True
+        self.c.yview_moveto(0)
+        self.render()
+        self.refresh()
+
+    def close_stats(self) -> None:
+        self.stats_page = False
+        self.c.yview_moveto(0)
+        self.render()
 
     def open_detail(self, sid: int) -> None:
         self.detail = sid
@@ -920,9 +968,13 @@ class PokeWindow:
 
         card = self.card(x0, y, cw, 10)
         cy = y + 12
-        size = SPRITE_BOX * self.sprite_scale
+        size = self.sprite_draw_box = self.sprite_box
         self.sprite_subject = ("mon", sid, shiny)
         self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="")
+        if raising and a and sid == a.current_id:
+            self.text(x0 + cw - 16, y + 10, "Stats ›", "captionB", "blue", anchor="ne", tags=("to-stats",))
+            self.c.tag_bind("to-stats", "<Button-1>", lambda e: self.open_stats())
+            self._hand("to-stats")
         cy += size + 4
         self.text(x0 + cw / 2, cy, name + ("  ✦" if shiny else ""), "title", "yellow" if shiny else "label", anchor="n")
         cy += 34
@@ -972,9 +1024,6 @@ class PokeWindow:
                 self.c.tag_bind(tag, "<Button-1>", lambda e, c=cid: self.open_detail(c))
         y += 118 + 12
 
-        if raising and a and sid == a.current_id:
-            y = self.draw_stats_card(y, x0, cw)
-
         # records
         rows = []
         if raising and a:
@@ -997,12 +1046,52 @@ class PokeWindow:
             ry += 38
         return y + h + 12
 
-    def draw_stats_card(self, y, x0, cw) -> int:
-        """Level, types, abilities, size and the six stats of the active Pokémon."""
+    def _stats_view(self):
         comp, s = self.app.companion, self.app.companion.state
         a = s.active
         meta = (self.payload or {}).get("meta", {}).get(a.current_id) if a else None
-        view = comp.stats_view(meta) if meta else None
+        return comp.stats_view(meta) if meta else None
+
+    def draw_stats_page(self, y, x0, cw) -> int:
+        """Home → Stats: mini sprite header, then the stats card; both fit one screen."""
+        comp, s = self.app.companion, self.app.companion.state
+        a = s.active
+        view = self._stats_view()
+        self.text(x0, y + 4, "‹ Home", "headline", "blue", tags=("back-home",))
+        self.c.tag_bind("back-home", "<Button-1>", lambda e: self.close_stats())
+        self._hand("back-home")
+        self.text(x0 + cw, y + 4, "View in Pokédex ›", "headline", "blue", anchor="ne", tags=("to-dex",))
+        self.c.tag_bind("to-dex", "<Button-1>", lambda e, sid=a.current_id: self.open_species(sid))
+        self._hand("to-dex")
+        y += 32
+        h = MINI_BOX + 24
+        self.card(x0, y, cw, h)
+        self.sprite_draw_box = MINI_BOX
+        self.sprite_subject = ("mon", a.current_id, a.shiny_visible)
+        self.sprite_item = self.c.create_image(x0 + 12 + MINI_BOX / 2, y + 12 + MINI_BOX / 2, image="")
+        tx = x0 + 12 + MINI_BOX + 16
+        ty = y + 16
+        name = comp.display_name()
+        self.text(tx, ty, name + ("  ✦" if a.shiny_visible else ""), "title2", "yellow" if a.shiny_visible else "label")
+        ty += 28
+        if view:
+            self.text(tx, ty, f"Lv {view['level']}  ·  {a.rarity.title()}", "headline", "label")
+            ty += 26
+            px = tx
+            for t in view["types"]:
+                px += self.pill(px, ty, t.title(), TYPE_COLORS.get(t, "gray")) + 6
+            ty += 28
+            self.text(tx, ty, f"{(a.nature or '').title()} · {view['height_m']:.1f} m · {view['weight_kg']:.1f} kg", "caption", "secondary")
+        else:
+            self.text(tx, ty, f"Stage {a.stage_index + 1} of {a.total_forms}  ·  {a.rarity.title()}", "headline", "label")
+            ty += 26
+            self.text(tx, ty, "loading stats…" if self.busy else "stats unavailable offline", "caption", "tertiary")
+        y += h + 12
+        return self.draw_stats_card(y, x0, cw)
+
+    def draw_stats_card(self, y, x0, cw) -> int:
+        """Abilities and the six stats (with IVs and the luck behind them) of the active Pokémon."""
+        view = self._stats_view()
         card = self.card(x0, y, cw, 10)
         cy = y + 12
         self.text(x0 + 18, cy, "STATS", "captionB", "secondary")
@@ -1011,14 +1100,9 @@ class PokeWindow:
             cy += 30
             self.fit_card(card, x0, y, cw, cy - y)
             return cy + 12
-        self.text(x0 + cw - 18, cy - 2, f"Lv {view['level']}", "headline", "label", anchor="ne")
+        self.text(x0 + cw - 18, cy, f"IV total {view['iv_total']}/186" if view["iv_total"] is not None else "IVs unknown",
+                  "caption", "tertiary", anchor="ne")
         cy += 22
-        px = x0 + 18
-        for t in view["types"]:
-            px += self.pill(px, cy, t.title(), TYPE_COLORS.get(t, "gray")) + 6
-        nature = (view["nature"] or "").title()
-        self.text(x0 + cw - 18, cy + 3, f"{nature} · {view['height_m']:.1f} m · {view['weight_kg']:.1f} kg", "caption", "secondary", anchor="ne")
-        cy += 30
         abil = ", ".join(x["name"].replace("-", " ").title() + (" (hidden)" if x["hidden"] else "") for x in view["abilities"])
         self.text(x0 + 18, cy, self._ellipsize("Abilities: " + abil, "caption", cw - 36), "caption", "tertiary")
         cy += 22
@@ -1036,13 +1120,11 @@ class PokeWindow:
             cy += 22
         cy += 4
         lk = view["luck"] or {}
-        if view["iv_total"] is not None:
-            luck_txt = f"IV total {view['iv_total']}/186"
-            if lk:
-                luck_txt += (f" · {lk.get('bonusRolls', 0)} bonus roll{'s' if lk.get('bonusRolls', 0) != 1 else ''} at hatch "
-                             f"({lk.get('streak', 0)}-day streak, {lk.get('cacheRatio', 0) * 100:.0f}% cache)")
+        if view["iv_total"] is not None and lk:
+            luck_txt = (f"Luck at hatch: {lk.get('bonusRolls', 0)} bonus roll{'s' if lk.get('bonusRolls', 0) != 1 else ''} "
+                        f"· {lk.get('streak', 0)}-day streak · {lk.get('cacheRatio', 0) * 100:.0f}% cache reads · shiny 1/{lk.get('shinyDenominator', '?')}")
             self.text(x0 + 18, cy, self._ellipsize(luck_txt, "caption", cw - 36), "caption", "tertiary")
-        else:
+        elif view["iv_total"] is None:
             self.text(x0 + 18, cy, "IVs unknown — hatched before stats existed", "caption", "tertiary")
         cy += 24
         self.fit_card(card, x0, y, cw, cy - y)
@@ -1142,7 +1224,7 @@ class PokeWindow:
         snap = self.payload["snap"] if self.payload else None
         state = comp.display_state
         accent = STATE_COLOR.get(state, "blue")
-        size = SPRITE_BOX * self.sprite_scale
+        size = self.sprite_draw_box = self.sprite_box
         y = 10
         self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
         self.sprite_item = self.c.create_image(w / 2, y + size / 2, image="")
@@ -1185,7 +1267,7 @@ class PokeWindow:
             return
         comp = self.app.companion
         subject = self.sprite_subject
-        key = subject + (self.dark, self.compact, self.sprite_scale)
+        key = subject + (self.dark, self.compact, self.sprite_draw_box)
         self.speed = SPEED.get(comp.display_state, 1.0) if subject[0] == "egg" or subject[1] == (comp.state.active.current_id if comp.state.active else None) else 1.0
         if key != self.sprite_key or not self.frames:
             self.sprite_key = key
@@ -1206,26 +1288,40 @@ class PokeWindow:
             self.text(x, y, "…" if self.payload is None else "?", "title", "tertiary", anchor="center")
 
     def _load_frames(self, path, static: bool, bg_key: str) -> None:
+        """Fill the fixed container: crop to the visible pixels (union over all frames so the
+        scale stays constant while animating), scale by the largest whole number that fits,
+        centre. Small sprites therefore look as big as large ones. The egg sits at half size."""
         self.frames, self.durations, self.frame_idx = [], [], 0
         if not path or not Path(path).exists():
             return
-        scale = self.sprite_scale
+        box = self.sprite_draw_box
         bg = _rgb(self.P[bg_key])
         try:
             im = Image.open(path)
+            raw = []
             for frame in ImageSequence.Iterator(im):
-                fr = frame.convert("RGBA")
-                if max(fr.size) > SPRITE_BOX:
-                    fr.thumbnail((SPRITE_BOX, SPRITE_BOX), Image.NEAREST)
-                box = Image.new("RGBA", (SPRITE_BOX, SPRITE_BOX), bg)
-                box.alpha_composite(fr, ((SPRITE_BOX - fr.width) // 2, SPRITE_BOX - fr.height - 6))
-                self.frames.append(ImageTk.PhotoImage(box.resize((SPRITE_BOX * scale, SPRITE_BOX * scale), Image.NEAREST)))
-                self.durations.append(int(frame.info.get("duration", 100)) or 100)
+                raw.append((frame.convert("RGBA"), int(frame.info.get("duration", 100)) or 100))
                 if static:
                     break
         except (OSError, ValueError) as e:
             self.app.log(f"sprite load failed {path}: {e}")
-            self.frames = []
+            return
+        bbox = union_bbox([f for f, _ in raw])
+        if bbox is None:
+            return
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        target = box // 2 if self.sprite_subject[0] == "egg" else box - 2 * SPRITE_PAD
+        scale = fit_scale(w, h, target)
+        for fr, dur in raw:
+            crop = fr.crop(bbox)
+            if scale >= 1:
+                crop = crop.resize((w * scale, h * scale), Image.NEAREST)
+            else:
+                crop.thumbnail((target, target), Image.LANCZOS)
+            canvas = Image.new("RGBA", (box, box), bg)
+            canvas.alpha_composite(crop, ((box - crop.width) // 2, (box - crop.height) // 2))
+            self.frames.append(ImageTk.PhotoImage(canvas))
+            self.durations.append(dur)
 
     def _animate(self) -> None:
         if not self.frames or self.sprite_item is None:

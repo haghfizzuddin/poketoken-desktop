@@ -9,7 +9,7 @@ evolve it through its real evolution line, graduate it into your Pokédex, start
 
 <p align="center">
   <img src="docs/screenshots/home.png" width="230" alt="Home">
-  <img src="docs/screenshots/home-dark.png" width="230" alt="Home, dark">
+  <img src="docs/screenshots/stats.png" width="230" alt="Stats">
   <img src="docs/screenshots/shop.png" width="230" alt="Shop">
   <img src="docs/screenshots/dex.png" width="230" alt="Pokédex">
 </p>
@@ -72,8 +72,8 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 
 | command | what |
 |---|---|
-| `poketoken app` | open the live window (a second call brings the existing window to front) |
-| `poketoken app --detach` | open it in the background and return to the shell |
+| `poketoken app` | open the live window in the background and return to the shell (a second call brings it to front) |
+| `poketoken app --fg` | the same, but attached to the terminal (errors print there instead of `app.log`) |
 | `poketoken close` | close the running window |
 | `poketoken toggle` | open in the background, or close if it is open — what the shortcuts use |
 | `poketoken pet` | the same window in its compact, companion-only view |
@@ -91,10 +91,14 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 
 Window flags: `--dark` / `--light`, `--compact`, `-i SECONDS` (refresh, default 30).
 Keys: `Esc` / `Ctrl-W` close, `Ctrl-R` refresh, right-click or `⋯` for the menu (appearance,
-compact view, sprite size 2×/3×/4×, notifications). Shop and Bag buttons arm on the first click
-and fire on the second, so a stray click never spends tokens. Click the companion on Home or any
-Pokédex cell to open its detail page: big sprite, evolution line, stats card, records. Future
-forms in the evolution line are shown blurred and sharpen as you approach the threshold.
+compact view, sprite size, notifications). Sprites fill a fixed container — 256, 320 (default),
+384 or 448 px — scaled by the largest whole number that fits, so a Pikachu looks as big as a
+Venusaur; sizes wider than the window widen it. Shop and Bag buttons arm on the first click and
+fire on the second, so a stray click never spends tokens. Click the companion on Home for its
+**Stats** page (level, types, abilities, the six stats with IVs, the luck behind them) with
+"‹ Home" and "View in Pokédex ›" links; Pokédex cells open a species page with the big sprite,
+evolution line and records. Future forms in the evolution line are shown blurred and sharpen as
+you approach the threshold.
 
 ### Claude Code status line
 
