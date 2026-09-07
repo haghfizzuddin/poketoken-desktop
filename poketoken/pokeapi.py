@@ -24,6 +24,8 @@ ITEM_BASE = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/it
 ANIMATED_IDS = range(1, 650)          # Gen-V animated assets exist for #1..#649 only
 DITTO_ID = 132                        # reserved for the (unported) disguise mechanic
 LANG_CODES = ("ko", "en", "ja-Hrkt", "ja", "es", "fr", "pt", "de")
+TYPES = ("normal", "fire", "water", "electric", "grass", "ice", "fighting", "poison", "ground", "flying",
+         "psychic", "bug", "rock", "ghost", "dragon", "dark", "steel", "fairy")
 LANG_FALLBACK = {"ko": ["ko"], "en": ["en"], "ja": ["ja-Hrkt", "ja"], "es": ["es"],
                  "fr": ["fr"], "pt": ["pt"], "de": ["de"]}
 BASE_INDEX_TTL = 30 * 86400
@@ -178,6 +180,7 @@ class PokeAPI:
         self.sprite_dir.mkdir(parents=True, exist_ok=True)
         self._species: dict[int, dict] = {}
         self._pokemon: dict[int, dict] = {}
+        self._type_chart: dict[str, dict[str, float]] | None = None
         self._lines: dict[int, EvoLine] = {}
         self._base_index: list[tuple[int, int]] | None = None
         self._opener = _build_opener()
@@ -265,6 +268,30 @@ class PokeAPI:
         self._write_json(path, slim)
         self._pokemon[sid] = slim
         return slim
+
+    def type_chart(self) -> dict[str, dict[str, float]]:
+        """attacking type -> {defending type: multiplier} for all 18 types (cached forever)."""
+        if self._type_chart:
+            return self._type_chart
+        path = self.cache_dir / "types.json"
+        cached = self._read_json(path)
+        if cached and len(cached) == len(TYPES):
+            self._type_chart = cached
+            return cached
+        chart: dict[str, dict[str, float]] = {}
+        for t in TYPES:
+            rel = self._get_json(f"{REST}/type/{t}/").get("damage_relations", {})
+            row = {d: 1.0 for d in TYPES}
+            for x in rel.get("no_damage_to", []):
+                row[x["name"]] = 0.0
+            for x in rel.get("half_damage_to", []):
+                row[x["name"]] = 0.5
+            for x in rel.get("double_damage_to", []):
+                row[x["name"]] = 2.0
+            chart[t] = row
+        self._write_json(path, chart)
+        self._type_chart = chart
+        return chart
 
     def line(self, base_id: int) -> EvoLine:
         if base_id in self._lines:

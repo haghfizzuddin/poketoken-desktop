@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, companion as C, fmt, instance, usage as U
+from . import __version__, battle as B, companion as C, fmt, instance, settings, usage as U
 from .paths import state_dir
 from .pokeapi import PokeAPI
 
@@ -225,6 +226,71 @@ def cmd_stats(app: App, args) -> int:
     return 0
 
 
+def _read_card_arg(text: str) -> dict:
+    """A card token, '-' for stdin, or a path to a file holding one."""
+    if text == "-":
+        text = sys.stdin.read()
+    elif not text.startswith(B.CARD_PREFIX) and Path(text).is_file():
+        text = Path(text).read_text("utf-8")
+    return B.decode_card(text)
+
+
+def _my_card(app: App) -> dict | None:
+    a = app.companion.state.active
+    if a is None:
+        return None
+    meta = app.api.pokemon(a.current_id)
+    trainer = settings.get(app.dir, "trainer") or B.default_trainer()
+    return B.make_card(app.companion, meta, trainer)
+
+
+def cmd_card(app: App, args) -> int:
+    if args.trainer:
+        settings.set(app.dir, "trainer", args.trainer[:24])
+        print(f"trainer name set to {args.trainer[:24]!r}")
+    app.tick()
+    card = _my_card(app)
+    if card is None:
+        print("No Pokémon to put on a card yet (egg).")
+        return 1
+    if args.json:
+        print(json.dumps(card, indent=1))
+        return 0
+    print(B.card_summary(card))
+    print(f"power {B.power_score(card)}\n")
+    print(B.encode_card(card))
+    print("\nSend that line to a colleague; they run:  poketoken battle <card>")
+    return 0
+
+
+def cmd_battle(app: App, args) -> int:
+    chart = app.api.type_chart()
+    try:
+        if args.other:
+            card_a, card_b = _read_card_arg(args.card), _read_card_arg(args.other)
+        else:
+            app.tick()
+            card_a = _my_card(app)
+            if card_a is None:
+                print("You need a hatched Pokémon to battle.")
+                return 1
+            card_b = _read_card_arg(args.card)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 1
+    res = B.simulate(card_a, card_b, chart)
+    print(f"{B.card_summary(card_a)}\n    vs\n{B.card_summary(card_b)}\n")
+    for line in res["log"][: args.log]:
+        print("  " + line)
+    if len(res["log"]) > args.log:
+        print(f"  … {len(res['log']) - args.log} more turns")
+    w, l = res["winner"], res["loser"]
+    print(f"\n🏆 {w['name']} ({w['trainer']}) wins in {res['turns']} turn{'s' if res['turns'] != 1 else ''} · "
+          f"{res['remaining'][w['name']]} HP left · {l['name']} ({l['trainer']}) fainted")
+    print(f"power {B.power_score(card_a)} vs {B.power_score(card_b)}")
+    return 0
+
+
 def cmd_dex(app: App, args) -> int:
     s = app.companion.state
     if not s.dex:
@@ -348,6 +414,13 @@ def main(argv: list[str] | None = None) -> int:
     hi = sub.add_parser("history", help="daily usage table, streak and weekly goal")
     hi.add_argument("-n", "--days", type=int, default=30)
     sub.add_parser("stats", help="level, types, abilities and stats of your current Pokémon")
+    cd = sub.add_parser("card", help="print your battle card to share with a colleague")
+    cd.add_argument("--json", action="store_true", help="raw card instead of the token")
+    cd.add_argument("--trainer", help="set the trainer name shown on your card")
+    bt = sub.add_parser("battle", help="fight a colleague's card (or two cards against each other)")
+    bt.add_argument("card", help="a PT1. card token, a file containing one, or - for stdin")
+    bt.add_argument("other", nargs="?", help="second card: spectate two cards instead of using yours")
+    bt.add_argument("--log", type=int, default=12, help="turns of battle log to print")
     sub.add_parser("dex", help="Pokédex / catch log")
     sh = sub.add_parser("shop", help="token shop")
     sh.add_argument("--buy", help="candy | mint | charm | egg | egg-uncommon | egg-rare")
@@ -373,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     app = App(args.state_dir)
     handler = {"status": cmd_status, "watch": cmd_watch, "statusline": cmd_statusline, "refresh": cmd_refresh,
                "dex": cmd_dex, "shop": cmd_shop, "bag": cmd_bag, "pet": cmd_pet, "debug": cmd_debug,
-               "history": cmd_history, "stats": cmd_stats,
+               "history": cmd_history, "stats": cmd_stats, "card": cmd_card, "battle": cmd_battle,
                "app": cmd_app, "window": cmd_app, "ui": cmd_app, "open": cmd_app,
                "close": cmd_close, "toggle": cmd_toggle, None: cmd_status}[args.cmd]
     return handler(app, args)
