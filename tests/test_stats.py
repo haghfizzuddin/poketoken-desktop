@@ -107,6 +107,17 @@ class LevelAndViewTests(unittest.TestCase):
         c.state.active.used_at_stage = C.phase_threshold("common", 2, 1)
         self.assertEqual(c.level(), 100)
 
+    def test_static_view_for_records(self):
+        v = C.Companion.stats_view_static(PIKACHU, {k: 31 for k in C.STAT_KEYS}, "timid")
+        self.assertEqual(v["level"], 100)
+        rows = {r["key"]: r for r in v["rows"]}
+        self.assertEqual(rows["hp"]["value"], C.stat_value("hp", 35, 31, 100, "timid"))
+        self.assertEqual(rows["speed"]["mod"], 1)
+        self.assertIsNone(v["luck"])
+        unknown = C.Companion.stats_view_static(PIKACHU, None, None)
+        self.assertIsNone(unknown["iv_total"])
+        self.assertTrue(all(r["iv"] is None for r in unknown["rows"]))
+
     def test_stats_view(self):
         c = comp_with_history({})
         c.state.active = C.MonState(25, [25], [25, 26], rarity="common", total_forms=2, nature="jolly",

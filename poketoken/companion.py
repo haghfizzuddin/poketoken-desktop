@@ -777,16 +777,21 @@ class Companion:
                          "mod": nature_mod(k, nature)})
         return rows
 
+    @classmethod
+    def stats_view_static(cls, meta: dict, ivs: dict[str, int] | None, nature: str | None,
+                          level: int = LEVEL_MAX, luck: dict | None = None) -> dict:
+        """Stats card data for any species at a given level (Pokédex records: Lv 100, saved IVs)."""
+        return {"level": level, "rows": cls.stats_rows(meta, ivs, level, nature), "types": list(meta.get("types", [])),
+                "abilities": list(meta.get("abilities", [])), "height_m": meta.get("height", 0) / 10,
+                "weight_kg": meta.get("weight", 0) / 10, "nature": nature, "ivs": ivs, "luck": luck,
+                "iv_total": sum(ivs.values()) if ivs else None}
+
     def stats_view(self, meta: dict) -> dict | None:
         """Stats card data for the active Pokémon (meta = PokeAPI.pokemon(current_id))."""
         a = self.state.active
         if a is None or not meta or int(meta.get("id", -1)) != a.current_id:
             return None
-        lvl = self.level()
-        return {"level": lvl, "rows": self.stats_rows(meta, a.ivs, lvl, a.nature), "types": list(meta.get("types", [])),
-                "abilities": list(meta.get("abilities", [])), "height_m": meta.get("height", 0) / 10,
-                "weight_kg": meta.get("weight", 0) / 10, "nature": a.nature, "ivs": a.ivs, "luck": a.luck,
-                "iv_total": sum(a.ivs.values()) if a.ivs else None}
+        return self.stats_view_static(meta, a.ivs, a.nature, self.level(), a.luck)
 
     # ------------------------------------------------------------- history
     def record_history(self, day_rows: dict[str, dict], today: str, backfill: bool = False) -> None:

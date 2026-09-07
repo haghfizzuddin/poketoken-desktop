@@ -28,7 +28,7 @@ class FitTests(unittest.TestCase):
 
     def test_defaults(self):
         self.assertIn(ui.DEFAULT_SPRITE_BOX, ui.SPRITE_BOXES)
-        self.assertEqual(ui.DEFAULT_SPRITE_BOX, 320)
+        self.assertEqual(ui.DEFAULT_SPRITE_BOX, 256)
 
 
 if __name__ == "__main__":

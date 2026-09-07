@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import __version__, battle as B, companion as C, fmt, instance, notify, settings, usage as U
 from .paths import state_dir
-from .pokeapi import PokeAPI
+from .pokeapi import PokeAPI, PokeAPIError
 
 RARITY_EMOJI = {"common": "○", "uncommon": "◐", "rare": "●", "legendary": "★"}
 
@@ -268,7 +268,11 @@ def cmd_card(app: App, args) -> int:
         settings.set(app.dir, "trainer", args.trainer[:24])
         print(f"trainer name set to {args.trainer[:24]!r}")
     app.tick()
-    card = _my_card(app)
+    try:
+        card = _my_card(app)
+    except PokeAPIError as e:
+        print(f"✗ PokéAPI unreachable, cannot build the card right now: {e}")
+        return 1
     if card is None:
         print("No Pokémon to put on a card yet (egg).")
         return 1
@@ -283,8 +287,8 @@ def cmd_card(app: App, args) -> int:
 
 
 def cmd_battle(app: App, args) -> int:
-    chart = app.api.type_chart()
     try:
+        chart = app.api.type_chart()
         if args.other:
             card_a, card_b = _read_card_arg(args.card), _read_card_arg(args.other)
         else:
@@ -294,6 +298,9 @@ def cmd_battle(app: App, args) -> int:
                 print("You need a hatched Pokémon to battle.")
                 return 1
             card_b = _read_card_arg(args.card)
+    except PokeAPIError as e:
+        print(f"✗ PokéAPI unreachable, try again later: {e}")
+        return 1
     except ValueError as e:
         print(f"✗ {e}")
         return 1

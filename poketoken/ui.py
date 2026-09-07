@@ -49,7 +49,8 @@ TYPE_COLORS = {"normal": "#A8A77A", "fire": "#EE8130", "water": "#6390F0", "elec
                "dark": "#705746", "steel": "#8E8EB0", "fairy": "#D685AD"}
 SPRITE_BOX = 96                     # native size class of the Gen-V sprites (used by previews)
 SPRITE_BOXES = (256, 320, 384, 448)  # fixed container sizes offered in the menu
-DEFAULT_SPRITE_BOX = 320            # the largest that fits the 392-wide window; bigger sizes widen it
+DEFAULT_SPRITE_BOX = 256            # Home shows companion + evolution line + Today without scrolling
+EVO_CARD_H = 104
 SPRITE_PAD = 12
 MINI_BOX = 128                      # stats page header sprite
 FULL_GEOMETRY = "392x700"
@@ -168,8 +169,8 @@ class PokeWindow:
         self.compact = compact
         self.dark = bool(prefs.get("dark", False)) if dark is None else dark
         self.tab = "home"                                   # always open on Home
-        self.detail: int | None = None                      # species shown in the Pokédex species page
-        self.stats_page = False                             # Home → Stats sub-page
+        self.detail: int | None = None                      # species page currently shown (any tab)
+        self.detail_origin = "dex"                          # which tab opened it: "home" or "dex"
         self.sprite_box = int(prefs["sprite_box"]) if prefs.get("sprite_box") in SPRITE_BOXES else DEFAULT_SPRITE_BOX
         self.sprite_draw_box = self.sprite_box              # box used by the sprite item on the current page
         self.sprite_subject: tuple = ("egg",)
@@ -400,7 +401,6 @@ class PokeWindow:
     def set_tab(self, tab: str) -> None:
         self.tab = tab
         self.detail = None
-        self.stats_page = False
         self.armed = None
         self.c.yview_moveto(0)
         self._save_prefs()
@@ -634,10 +634,8 @@ class PokeWindow:
             y = self.draw_compact(w)
         else:
             y = self.draw_header(w)
-            if self.tab == "dex" and self.detail is not None:
-                y = self.draw_detail(y, x0, cw)
-            elif self.tab == "home" and self.stats_page and self.app.companion.state.active:
-                y = self.draw_stats_page(y, x0, cw)
+            if self.detail is not None:
+                y = self.draw_species(y, x0, cw)
             else:
                 y = {"home": self.draw_home, "dex": self.draw_dex, "shop": self.draw_shop,
                      "bag": self.draw_bag}[self.tab](y, x0, cw)
@@ -657,7 +655,7 @@ class PokeWindow:
 
     def draw_header(self, w) -> int:
         y = 14
-        self.text(16, y, "PokeToken", "largeTitle", "label")
+        self.text(16, y - 2, "PokeToken", "largeTitle", "label")
         # "more" button (three dots in a circle)
         cx, cy = w - 30, y + 16
         self.c.create_oval(cx - 14, cy - 14, cx + 14, cy + 14, fill=self.P["fill"], outline="", tags=("more",))
@@ -666,9 +664,9 @@ class PokeWindow:
                                outline="", tags=("more",))
         self.c.tag_bind("more", "<Button-1>", self._show_menu)
         self._hand("more")
-        y += 44
+        y += 40
         # segmented control
-        x, segw, h = 16, w - 32, 32
+        x, segw, h = 16, w - 32, 30
         self.rrect(x, y, x + segw, y + h, 9, fill="seg")
         n = len(TABS)
         each = (segw - 4) / n
@@ -683,7 +681,7 @@ class PokeWindow:
                 self.text(sx + each / 2, y + h / 2, label, "caption", "label", anchor="center", tags=(tag,))
             self.c.tag_bind(tag, "<Button-1>", lambda e, k=key: self.set_tab(k))
             self._hand(tag)
-        return y + h + 14
+        return y + h + 10
 
     # ------------------------------------------------------------------ home
     def draw_home(self, y, x0, cw) -> int:
@@ -695,7 +693,7 @@ class PokeWindow:
         # hero card
         hero_tag = ("hero",) if s.active else ()
         card = self.card(x0, y, cw, 10, tags=hero_tag)
-        cy = y + 12
+        cy = y + 10
         size = self.sprite_draw_box = self.sprite_box
         self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
         self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="", tags=hero_tag)
@@ -703,7 +701,7 @@ class PokeWindow:
             self.c.tag_bind("hero", "<Button-1>", lambda e: self.open_stats())
             self._hand("hero")
             self.text(x0 + cw - 16, y + 10, "Stats ›", "captionB", "blue", anchor="ne", tags=hero_tag)
-        cy += size + 4
+        cy += size + 2
         name = comp.display_name()
         name_font = "title" if self.measure(name, "title") < cw - 40 else "title2"
         if s.active and s.active.shiny_visible:
@@ -712,7 +710,7 @@ class PokeWindow:
             self.text(x0 + cw / 2 + tw / 2, cy + 3, "✦", "title2", "yellow", anchor="ne")
         else:
             self.text(x0 + cw / 2, cy, name, name_font, "label", anchor="n")
-        cy += 34
+        cy += 30
         pills = []
         if s.active:
             a = s.active
@@ -724,7 +722,7 @@ class PokeWindow:
         px = x0 + cw / 2 - total / 2
         for t, colr in pills:
             px += self.pill(px, cy, t, colr) + 6
-        cy += 34
+        cy += 28
         if s.active:
             left = f"Stage {s.active.stage_index + 1} of {s.active.total_forms}"
             right = f"{fmt.compact(comp.tokens_to_next)} to " + ("graduation" if comp.is_final_stage else "next form")
@@ -735,69 +733,40 @@ class PokeWindow:
             frac = comp.egg_progress
         self.text(x0 + 18, cy, left, "captionB", "secondary")
         self.text(x0 + cw - 18, cy, right, "caption", "secondary", anchor="ne")
-        cy += 20
+        cy += 18
         self.capsule(x0 + 18, cy, cw - 36, 8, frac, accent)
-        cy += 16
+        cy += 14
         used = s.active.used_at_stage if s.active else s.egg_usage
         self.text(x0 + 18, cy, f"{fmt.compact(used)} / {fmt.compact(comp.threshold)}  ·  {fmt.percent(frac * 100)}",
                   "caption", "tertiary")
         if not s.install_baseline_set:
             self.text(x0 + cw - 18, cy, "waiting for first usage", "caption", "tertiary", anchor="ne")
-        cy += 24
+        cy += 20
         self.fit_card(card, x0, y, cw, cy - y)
-        y = cy + 12
+        y = cy + 10
 
         # evolution line
         if s.active and comp.line:
-            items = comp.line_items()
-            card = self.card(x0, y, cw, 118)
-            self.text(x0 + 18, y + 12, "EVOLUTION LINE", "captionB", "secondary")
-            n = max(1, len(items))
-            each = (cw - 24) / n
-            for i, (sid, st) in enumerate(items):
-                cx = x0 + 12 + each * i + each / 2
-                ty = y + 34
-                if st == "current":
-                    self.rrect(cx - 34, ty - 4, cx + 34, ty + 72, 12,
-                               fill=_blend(self.P[accent], self.P["card"], 0.86 if not self.dark else 0.75))
-                if sid is None:
-                    self.draw_future_form(cx, ty + 26, i)
-                    label = "???"
-                else:
-                    ph = self.img(self.payload["paths"].get(("static", sid, s.active.shiny_visible)) if self.payload else None,
-                                  LINE_SPRITE, "card")
-                    if ph:
-                        self.c.create_image(cx, ty + 26, image=ph)
-                    else:
-                        self.text(cx, ty + 26, f"#{sid}", "caption", "tertiary", anchor="center")
-                    label = comp.line.name(sid, s.language)
-                self.text(cx, ty + 56, self._ellipsize(label, "caption", each - 8), "caption",
-                          "label" if st == "current" else "secondary", anchor="n")
-                if i < n - 1:
-                    self.text(x0 + 12 + each * (i + 1), ty + 26, "›", "title2", "tertiary", anchor="center")
-            y += 118 + 12
+            y = self.draw_evo_line(y, x0, cw, [(sid, st == "current") for sid, st in comp.line_items()],
+                                   lambda cid: comp.line.name(cid, s.language), accent, clickable=False) + 10
 
         # today card
         card = self.card(x0, y, cw, 10)
-        cy = y + 12
+        cy = y + 10
         self.text(x0 + 18, cy, "TODAY", "captionB", "secondary")
         if snap:
             self.text(x0 + cw - 18, cy, snap.today_date, "caption", "tertiary", anchor="ne")
-        cy += 18
+        cy += 16
         t = snap.today if snap else None
         self.text(x0 + 18, cy, fmt.compact(t.total) if t else "—", "num", "label")
         self.text(x0 + 18 + self.measure(fmt.compact(t.total) if t else "—", "num") + 8, cy + 20, "tokens", "sub", "secondary")
         self.text(x0 + cw - 18, cy + 8, fmt.cost(t.cost) if t else "—", "title", "green", anchor="ne")
-        cy += 46
+        cy += 42
         if t:
             split = (f"in {fmt.compact(t.input)}  ·  out {fmt.compact(t.output)}  ·  "
                      f"cache write {fmt.compact(t.cache_write)}  ·  cache read {fmt.compact(t.cache_read)}")
             self.text(x0 + 18, cy, self._ellipsize(split, "caption", cw - 36), "caption", "secondary")
             cy += 16
-            if snap.models_today:
-                line = "  ·  ".join(f"{m.replace('claude-', '')} {fmt.compact(n)}" for m, n in list(snap.models_today.items())[:3])
-                self.text(x0 + 18, cy, self._ellipsize(line, "caption", cw - 36), "caption", "tertiary")
-                cy += 16
         cy += 8
         self.fit_card(card, x0, y, cw, cy - y)
         y = cy + 12
@@ -807,6 +776,9 @@ class PokeWindow:
         if snap:
             tpm = snap.tokens_per_minute
             rows.append(("Burn rate", f"{fmt.compact(int(tpm))}/min · {snap.burn_tier}" if tpm and tpm > 1000 else "quiet"))
+            if snap.models_today:
+                rows.append(("Models", " · ".join(f"{m.replace('claude-', '')} {fmt.compact(n)}"
+                                                  for m, n in list(snap.models_today.items())[:2])))
             if snap.block:
                 mins = (snap.now.timestamp() - (snap.block_start or snap.now.timestamp())) / 60
                 rows.append(("5-hour block", f"{fmt.compact(snap.block.total)} · {fmt.cost(snap.block.cost)} · {mins:.0f} min"))
@@ -912,117 +884,153 @@ class PokeWindow:
         a = s.active
         return bool(a and a.shiny_visible and sid in a.path_ids[: a.stage_index + 1])
 
-    def open_species(self, sid: int) -> None:
-        """Jump to a species page in the Pokédex from anywhere."""
-        self.tab = "dex"
-        self.stats_page = False
-        self.open_detail(sid)
-
-    def open_stats(self) -> None:
-        """Home → Stats sub-page for the Pokémon being raised."""
-        self.tab = "home"
-        self.detail = None
-        self.stats_page = True
-        self.c.yview_moveto(0)
-        self.render()
-        self.refresh()
-
-    def close_stats(self) -> None:
-        self.stats_page = False
-        self.c.yview_moveto(0)
-        self.render()
-
-    def open_detail(self, sid: int) -> None:
+    def open_species(self, sid: int, origin: str = "dex") -> None:
+        """Show the species page. `origin` is the tab that stays highlighted and that '‹' returns to."""
+        self.tab = origin
+        self.detail_origin = origin
         self.detail = sid
         self.c.yview_moveto(0)
         self.render()
-        self.refresh()                       # fetch this species' animated sprite in the background
+        self.refresh()                       # fetch this species' sprites and stats in the background
+
+    def open_stats(self) -> None:
+        """Home → the page of the Pokémon being raised."""
+        a = self.app.companion.state.active
+        if a is not None:
+            self.open_species(a.current_id, "home")
+
+    def open_detail(self, sid: int) -> None:
+        self.open_species(sid, "dex")
+
+    def open_board(self) -> None:
+        self.set_tab("dex")
 
     def close_detail(self) -> None:
         self.detail = None
         self.c.yview_moveto(0)
         self.render()
 
-    def draw_detail(self, y, x0, cw) -> int:
+    def close_stats(self) -> None:
+        self.close_detail()
+
+    def draw_evo_line(self, y, x0, cw, items, name_of, accent="blue", clickable=True) -> int:
+        """One evolution-line card. items = [(species_id | None for a hidden future form, is_current)]."""
+        self.card(x0, y, cw, EVO_CARD_H)
+        self.text(x0 + 18, y + 10, "EVOLUTION LINE", "captionB", "secondary")
+        n = max(1, len(items))
+        each = (cw - 24) / n
+        ty = y + 28
+        for i, (cid, current) in enumerate(items):
+            cx = x0 + 12 + each * i + each / 2
+            if current:
+                self.rrect(cx - 34, ty - 4, cx + 34, ty + 72, 12,
+                           fill=_blend(self.P[accent], self.P["card"], 0.86 if not self.dark else 0.75))
+            if cid is None:
+                self.draw_future_form(cx, ty + 26, i)
+                label = "???"
+            else:
+                tag = f"line:{cid}"
+                ph = self.img(self.payload["paths"].get(("static", cid, self._species_shiny(cid))) if self.payload else None,
+                              LINE_SPRITE, "card")
+                if ph:
+                    self.c.create_image(cx, ty + 26, image=ph, tags=(tag,))
+                else:
+                    self.text(cx, ty + 26, f"#{cid}", "caption", "tertiary", anchor="center", tags=(tag,))
+                label = name_of(cid)
+                if clickable and not current:
+                    self.c.tag_bind(tag, "<Button-1>", lambda e, c=cid: self.open_species(c, self.detail_origin))
+                    self._hand(tag)
+            self.text(cx, ty + 52, self._ellipsize(label, "caption", each - 8), "caption",
+                      "label" if current else "secondary", anchor="n")
+            if i < n - 1:
+                self.text(x0 + 12 + each * (i + 1), ty + 26, "›", "title2", "tertiary", anchor="center")
+        return y + EVO_CARD_H
+
+    def draw_species(self, y, x0, cw) -> int:
+        """The species page: mini sprite header, stats, evolution line, records. Opened from Home
+        (for the Pokémon being raised) or from any Pokédex cell."""
         comp, s = self.app.companion, self.app.companion.state
         sid = self.detail
         shiny = self._species_shiny(sid)
         entries = [e for e in s.dex if sid in e.chain_order]
         a = s.active
         raising = bool(a and sid in a.path_ids[: a.stage_index + 1])
-        # name / chain from whatever record knows this species; the active Pokémon shows its path
-        # so far plus its planned forms as previews, like Home
-        name, chain, hidden = f"#{sid}", [sid], 0
-        if raising and comp.line:
-            name, chain = comp.line.name(sid, s.language), list(a.path_ids[: a.stage_index + 1])
-            hidden = max(0, a.total_forms - len(chain))
-        elif entries:
-            name, chain = entries[0].name(sid, s.language), list(entries[0].chain_order)
-        rarity = entries[0].rarity if entries else (a.rarity if raising and a else "common")
+        is_current = bool(a and sid == a.current_id)
+        record = next((e for e in sorted(entries, key=lambda e: e.caught_at or "", reverse=True) if e.final_id == sid), None) \
+            or (entries[0] if entries else None)
+        name_of = (lambda cid: comp.line.name(cid, s.language)) if raising and comp.line else \
+                  (lambda cid: entries[0].name(cid, s.language)) if entries else (lambda cid: f"#{cid}")
+        name = name_of(sid)
+        rarity = a.rarity if raising and a else (record.rarity if record else "common")
+        nature = a.nature if is_current and a else (record.nature if record else None)
+        meta = (self.payload or {}).get("meta", {}).get(sid)
+        if is_current:
+            view = comp.stats_view(meta) if meta else None
+        elif meta:
+            view = comp.stats_view_static(meta, record.ivs if record else None, nature)
+        else:
+            view = None
 
-        self.text(x0, y + 4, "‹ Pokédex", "headline", "blue", tags=("back",))
+        # top bar
+        back = "‹ Home" if self.detail_origin == "home" else "‹ Pokédex"
+        self.text(x0, y + 4, back, "headline", "blue", tags=("back",))
         self.c.tag_bind("back", "<Button-1>", lambda e: self.close_detail())
         self._hand("back")
-        self.text(x0 + cw, y + 6, f"#{sid:03d}", "captionB", "tertiary", anchor="ne")
+        if self.detail_origin == "home":
+            self.text(x0 + cw, y + 4, "Pokédex ›", "headline", "blue", anchor="ne", tags=("to-board",))
+            self.c.tag_bind("to-board", "<Button-1>", lambda e: self.open_board())
+            self._hand("to-board")
+        else:
+            self.text(x0 + cw, y + 6, f"#{sid:03d}", "captionB", "tertiary", anchor="ne")
         y += 30
 
-        card = self.card(x0, y, cw, 10)
-        cy = y + 12
-        size = self.sprite_draw_box = self.sprite_box
+        # header card: mini sprite + identity
+        h = MINI_BOX + 24
+        self.card(x0, y, cw, h)
+        self.sprite_draw_box = MINI_BOX
         self.sprite_subject = ("mon", sid, shiny)
-        self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="")
-        if raising and a and sid == a.current_id:
-            self.text(x0 + cw - 16, y + 10, "Stats ›", "captionB", "blue", anchor="ne", tags=("to-stats",))
-            self.c.tag_bind("to-stats", "<Button-1>", lambda e: self.open_stats())
-            self._hand("to-stats")
-        cy += size + 4
-        self.text(x0 + cw / 2, cy, name + ("  ✦" if shiny else ""), "title", "yellow" if shiny else "label", anchor="n")
-        cy += 34
-        pills = [(rarity.title(), RARITY_COLOR[rarity])]
+        self.sprite_item = self.c.create_image(x0 + 12 + MINI_BOX / 2, y + 12 + MINI_BOX / 2, image="")
+        tx, ty = x0 + 12 + MINI_BOX + 14, y + 14
+        self.text(tx, ty, name + ("  ✦" if shiny else ""), "title2", "yellow" if shiny else "label")
+        ty += 26
+        if is_current and view:
+            line2 = f"Lv {view['level']}  ·  {rarity.title()}"
+        elif is_current:
+            line2 = f"{rarity.title()}  ·  raising"
+        elif record and not record.is_released and record.final_id == sid:
+            line2 = f"Lv 100  ·  {rarity.title()}  ·  graduated"
+        else:
+            line2 = f"{rarity.title()}" + ("  ·  raising" if raising else "  ·  released" if record and record.is_released else "")
+        self.text(tx, ty, self._ellipsize(line2, "headline", cw - MINI_BOX - 50), "headline", "label")
+        ty += 24
+        if view and view["types"]:
+            px = tx
+            for t in view["types"]:
+                px += self.pill(px, ty, t.title(), TYPE_COLORS.get(t, "gray")) + 6
+            ty += 26
+        tail = []
+        if is_current:
+            tail.append(f"stage {a.stage_index + 1} of {a.total_forms}")
+        if nature:
+            tail.append(nature.title())
+        if view:
+            tail.append(f"{view['height_m']:.1f} m · {view['weight_kg']:.1f} kg")
         if shiny:
-            pills.append(("Shiny owned", "yellow"))
-        if raising:
-            pills.append(("Raising now", "blue"))
-        grads = sum(1 for e in entries if not e.is_released and e.final_id == sid)
-        if grads:
-            pills.append((f"Graduated ×{grads}", "green"))
-        total = sum(self.measure(t, "captionB") + 16 for t, _ in pills) + 6 * (len(pills) - 1)
-        px = x0 + cw / 2 - total / 2
-        for t, colr in pills:
-            px += self.pill(px, cy, t, colr) + 6
-        cy += 36
-        self.fit_card(card, x0, y, cw, cy - y)
-        y = cy + 12
+            tail.append("shiny")
+        if tail:
+            self.text(tx, ty, self._ellipsize(" · ".join(tail), "caption", cw - MINI_BOX - 50), "caption", "secondary")
+        y += h + 10
 
-        # evolution line of the record
-        self.card(x0, y, cw, 118)
-        self.text(x0 + 18, y + 12, "EVOLUTION LINE", "captionB", "secondary")
-        n = max(1, len(chain) + hidden)
-        each = (cw - 24) / n
-        for i, cid in enumerate(chain + [None] * hidden):
-            cx = x0 + 12 + each * i + each / 2
-            ty = y + 34
-            if cid == sid:
-                self.rrect(cx - 34, ty - 4, cx + 34, ty + 72, 12,
-                           fill=_blend(self.P["blue"], self.P["card"], 0.86 if not self.dark else 0.75))
-            if cid is None:
-                self.draw_future_form(cx, ty + 26, i)
-                label = "???"
-            else:
-                ph = self.img(self.payload["paths"].get(("static", cid, self._species_shiny(cid))) if self.payload else None,
-                              LINE_SPRITE, "card")
-                if ph:
-                    self.c.create_image(cx, ty + 26, image=ph)
-                label = (comp.line.name(cid, s.language) if raising and comp.line
-                         else entries[0].name(cid, s.language) if entries else f"#{cid}")
-            self.text(cx, ty + 56, self._ellipsize(label, "caption", each - 8), "caption",
-                      "label" if cid == sid else "secondary", anchor="n")
-            if i < n - 1:
-                self.text(x0 + 12 + each * (i + 1), ty + 26, "›", "title2", "tertiary", anchor="center")
-            tag = f"dex:{cid}"
-            if cid is not None and cid != sid:
-                self.c.tag_bind(tag, "<Button-1>", lambda e, c=cid: self.open_detail(c))
-        y += 118 + 12
+        y = self.draw_stats_card(y, x0, cw, view, is_current) + 10
+
+        # evolution line: the Pokémon being raised shows reached forms + blurred previews
+        if raising and a and comp.line:
+            items = [(cid, cid == sid) for cid in a.path_ids[: a.stage_index + 1]]
+            items += [(None, False)] * max(0, a.total_forms - len(items))
+        else:
+            chain = list(record.chain_order) if record else [sid]
+            items = [(cid, cid == sid) for cid in chain]
+        y = self.draw_evo_line(y, x0, cw, items, name_of, "blue") + 10
 
         # records
         rows = []
@@ -1037,69 +1045,25 @@ class PokeWindow:
         ry = y + 30
         if not rows:
             self.text(x0 + 18, ry, "no records", "sub", "tertiary")
-        for i, (what, nature, when, colr) in enumerate(rows):
+        for i, (what, nat, when, colr) in enumerate(rows):
             self.dot(x0 + 22, ry + 9, 3.5, colr)
             self.text(x0 + 32, ry, self._ellipsize(what, "body", cw - 150), "body", "label")
-            self.text(x0 + cw - 18, ry + 1, f"{nature} · {when}".strip(" ·"), "caption", "secondary", anchor="ne")
+            self.text(x0 + cw - 18, ry + 1, f"{nat} · {when}".strip(" ·"), "caption", "secondary", anchor="ne")
             if i < len(rows) - 1:
                 self.sep(x0 + 18, ry + 30, cw - 36)
             ry += 38
         return y + h + 12
 
-    def _stats_view(self):
-        comp, s = self.app.companion, self.app.companion.state
-        a = s.active
-        meta = (self.payload or {}).get("meta", {}).get(a.current_id) if a else None
-        return comp.stats_view(meta) if meta else None
-
-    def draw_stats_page(self, y, x0, cw) -> int:
-        """Home → Stats: mini sprite header, then the stats card; both fit one screen."""
-        comp, s = self.app.companion, self.app.companion.state
-        a = s.active
-        view = self._stats_view()
-        self.text(x0, y + 4, "‹ Home", "headline", "blue", tags=("back-home",))
-        self.c.tag_bind("back-home", "<Button-1>", lambda e: self.close_stats())
-        self._hand("back-home")
-        self.text(x0 + cw, y + 4, "View in Pokédex ›", "headline", "blue", anchor="ne", tags=("to-dex",))
-        self.c.tag_bind("to-dex", "<Button-1>", lambda e, sid=a.current_id: self.open_species(sid))
-        self._hand("to-dex")
-        y += 32
-        h = MINI_BOX + 24
-        self.card(x0, y, cw, h)
-        self.sprite_draw_box = MINI_BOX
-        self.sprite_subject = ("mon", a.current_id, a.shiny_visible)
-        self.sprite_item = self.c.create_image(x0 + 12 + MINI_BOX / 2, y + 12 + MINI_BOX / 2, image="")
-        tx = x0 + 12 + MINI_BOX + 16
-        ty = y + 16
-        name = comp.display_name()
-        self.text(tx, ty, name + ("  ✦" if a.shiny_visible else ""), "title2", "yellow" if a.shiny_visible else "label")
-        ty += 28
-        if view:
-            self.text(tx, ty, f"Lv {view['level']}  ·  {a.rarity.title()}", "headline", "label")
-            ty += 26
-            px = tx
-            for t in view["types"]:
-                px += self.pill(px, ty, t.title(), TYPE_COLORS.get(t, "gray")) + 6
-            ty += 28
-            self.text(tx, ty, f"{(a.nature or '').title()} · {view['height_m']:.1f} m · {view['weight_kg']:.1f} kg", "caption", "secondary")
-        else:
-            self.text(tx, ty, f"Stage {a.stage_index + 1} of {a.total_forms}  ·  {a.rarity.title()}", "headline", "label")
-            ty += 26
-            self.text(tx, ty, "loading stats…" if self.busy else "stats unavailable offline", "caption", "tertiary")
-        y += h + 12
-        return self.draw_stats_card(y, x0, cw)
-
-    def draw_stats_card(self, y, x0, cw) -> int:
-        """Abilities and the six stats (with IVs and the luck behind them) of the active Pokémon."""
-        view = self._stats_view()
+    def draw_stats_card(self, y, x0, cw, view, live: bool) -> int:
+        """Abilities and the six stats with IVs; `live` = the Pokémon being raised (shows its luck)."""
         card = self.card(x0, y, cw, 10)
         cy = y + 12
-        self.text(x0 + 18, cy, "STATS", "captionB", "secondary")
+        self.text(x0 + 18, cy, "STATS" if live else "STATS AT LV 100", "captionB", "secondary")
         if view is None:
             self.text(x0 + cw - 18, cy, "loading…" if self.busy else "unavailable offline", "caption", "tertiary", anchor="ne")
             cy += 30
             self.fit_card(card, x0, y, cw, cy - y)
-            return cy + 12
+            return cy
         self.text(x0 + cw - 18, cy, f"IV total {view['iv_total']}/186" if view["iv_total"] is not None else "IVs unknown",
                   "caption", "tertiary", anchor="ne")
         cy += 22
@@ -1119,16 +1083,19 @@ class PokeWindow:
             self.text(x0 + cw - 18, cy + 1, iv, "caption", "tertiary", anchor="ne")
             cy += 22
         cy += 4
-        lk = view["luck"] or {}
-        if view["iv_total"] is not None and lk:
+        lk = view.get("luck") or {}
+        if live and view["iv_total"] is not None and lk:
             luck_txt = (f"Luck at hatch: {lk.get('bonusRolls', 0)} bonus roll{'s' if lk.get('bonusRolls', 0) != 1 else ''} "
                         f"· {lk.get('streak', 0)}-day streak · {lk.get('cacheRatio', 0) * 100:.0f}% cache reads · shiny 1/{lk.get('shinyDenominator', '?')}")
             self.text(x0 + 18, cy, self._ellipsize(luck_txt, "caption", cw - 36), "caption", "tertiary")
+            cy += 20
         elif view["iv_total"] is None:
-            self.text(x0 + 18, cy, "IVs unknown — hatched before stats existed", "caption", "tertiary")
-        cy += 24
+            self.text(x0 + 18, cy, "IVs unknown — hatched before stats existed" if live else "IVs were not recorded for this one",
+                      "caption", "tertiary")
+            cy += 20
+        cy += 4
         self.fit_card(card, x0, y, cw, cy - y)
-        return cy + 12
+        return cy
 
     # ----------------------------------------------------------------- shop
     def draw_shop(self, y, x0, cw) -> int:

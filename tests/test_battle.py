@@ -121,3 +121,26 @@ class SettingsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CliOfflineTests(unittest.TestCase):
+    """A PokéAPI outage must print a message, not a traceback."""
+
+    def test_card_and_battle_offline(self):
+        import contextlib, io
+        from poketoken import cli
+        from poketoken.pokeapi import PokeAPI, PokeAPIError
+        d = Path(tempfile.mkdtemp())
+        boom = lambda *a, **k: (_ for _ in ()).throw(PokeAPIError("offline"))  # noqa: E731
+        saved = PokeAPI.type_chart, PokeAPI.pokemon, PokeAPI.base_index, PokeAPI.line
+        PokeAPI.type_chart = PokeAPI.pokemon = PokeAPI.base_index = PokeAPI.line = boom
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc_b = cli.main(["--state-dir", str(d), "battle", "PT1.garbage"])
+                rc_c = cli.main(["--state-dir", str(d), "card"])
+            self.assertEqual(rc_b, 1)
+            self.assertIn("unreachable", out.getvalue())
+            self.assertEqual(rc_c, 1)                       # egg (no Pokémon) or offline: both rc 1, no crash
+        finally:
+            PokeAPI.type_chart, PokeAPI.pokemon, PokeAPI.base_index, PokeAPI.line = saved

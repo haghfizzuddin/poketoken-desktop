@@ -91,14 +91,15 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 
 Window flags: `--dark` / `--light`, `--compact`, `-i SECONDS` (refresh, default 30).
 Keys: `Esc` / `Ctrl-W` close, `Ctrl-R` refresh, right-click or `⋯` for the menu (appearance,
-compact view, sprite size, notifications). Sprites fill a fixed container — 256, 320 (default),
+compact view, sprite size, notifications). Sprites fill a fixed container — 256 (default), 320,
 384 or 448 px — scaled by the largest whole number that fits, so a Pikachu looks as big as a
-Venusaur; sizes wider than the window widen it. Shop and Bag buttons arm on the first click and
-fire on the second, so a stray click never spends tokens. Click the companion on Home for its
-**Stats** page (level, types, abilities, the six stats with IVs, the luck behind them) with
-"‹ Home" and "View in Pokédex ›" links; Pokédex cells open a species page with the big sprite,
-evolution line and records. Future forms in the evolution line are shown blurred and sharpen as
-you approach the threshold.
+Venusaur; at 256 the companion, its evolution line and today's usage all fit the first screen,
+and larger sizes widen the window. Shop and Bag buttons arm on the first click and fire on the
+second, so a stray click never spends tokens. Click the companion on Home, or any Pokédex cell,
+for that species' page: mini sprite and identity, the stats card (level, types, abilities, six
+stats with IVs and the luck behind them; graduated records show their stats at Lv 100), the
+evolution line and records. "‹ Home" / "‹ Pokédex" go back; "Pokédex ›" opens the board.
+Future forms in the evolution line are shown blurred and sharpen as you approach the threshold.
 
 ### Claude Code status line
 
