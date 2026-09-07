@@ -315,7 +315,11 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
             win.root.update(); time.sleep(0.05)
         win.render(); grab(win, "win-rich-stats")
         win.close_stats(); win.open_stats(); win.open_board()                        # "Pokédex ›" → the board
-        win.open_species(18); win.root.update(); grab(win, "win-rich-species-record")   # a graduated record's page
+        win.open_species(18); win.root.update()                                     # a graduated record's page
+        t0 = time.time()
+        while (win.busy or win.refresh_again) and time.time() - t0 < 20:
+            win.root.update(); time.sleep(0.05)
+        win.render(); grab(win, "win-rich-species-record")
         win.set_tab("dex"); win.open_detail(18); win.root.update()
         t0 = time.time()
         while win.busy and time.time() - t0 < 20:          # detail refresh fetches the species sprite

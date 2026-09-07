@@ -194,6 +194,7 @@ class PokeWindow:
         self.resize_job = None
         self.settled_geometry: str | None = None   # set from <Configure>, i.e. after the WM applied it
         self.poll_job = self.periodic_job = None
+        self.refresh_again = False
         self.want_quit = False                     # set by SIGTERM / `poketoken close`
 
         r = self.root = tk.Tk()
@@ -302,8 +303,10 @@ class PokeWindow:
     # ------------------------------------------------------------ worker
     def refresh(self) -> None:
         if self.busy:
+            self.refresh_again = True          # e.g. a page opened mid-refresh: run once more when this one lands
             return
         self.busy = True
+        self.refresh_again = False
         # The worker must not capture `self`: if it ended up holding the last reference to the
         # Tk root, Tk would be torn down from a non-main thread (Tcl_AsyncDelete abort).
         app, q, lock = self.app, self.q, self.lock
@@ -317,13 +320,16 @@ class PokeWindow:
                     events = app.companion.drain_events()
                 paths = resolve_sprites(app, extra)
                 meta: dict[int, dict] = {}
+                meta_failed: set[int] = set()
                 a = app.companion.state.active
                 for sid in {a.current_id if a else None, detail} - {None}:
                     try:
                         meta[sid] = app.api.pokemon(sid)
                     except Exception as e:  # noqa: BLE001 — stats are optional; the card says so
+                        meta_failed.add(sid)
                         app.log(f"pokemon meta unavailable for {sid}: {e}")
-                q.put(("ok", {"snap": snap, "events": events, "paths": paths, "meta": meta, "at": time.time()}))
+                q.put(("ok", {"snap": snap, "events": events, "paths": paths, "meta": meta,
+                              "meta_failed": meta_failed, "at": time.time()}))
             except Exception as e:  # noqa: BLE001
                 q.put(("err", repr(e)))
 
@@ -353,6 +359,8 @@ class PokeWindow:
                     self.app.log(f"ui refresh error: {payload}")
                     self._toast("Refresh failed — see events.log")
                     self.render()
+                if self.refresh_again:
+                    self.refresh()
         except queue.Empty:
             pass
         if self.toast and time.time() > self.toast[1]:
@@ -998,9 +1006,9 @@ class PokeWindow:
         elif is_current:
             line2 = f"{rarity.title()}  ·  raising"
         elif record and not record.is_released and record.final_id == sid:
-            line2 = f"Lv 100  ·  {rarity.title()}  ·  graduated"
+            line2 = f"Lv 100  ·  {rarity.title()}"
         else:
-            line2 = f"{rarity.title()}" + ("  ·  raising" if raising else "  ·  released" if record and record.is_released else "")
+            line2 = rarity.title()
         self.text(tx, ty, self._ellipsize(line2, "headline", cw - MINI_BOX - 50), "headline", "label")
         ty += 24
         if view and view["types"]:
@@ -1011,6 +1019,10 @@ class PokeWindow:
         tail = []
         if is_current:
             tail.append(f"stage {a.stage_index + 1} of {a.total_forms}")
+        elif raising:
+            tail.append("raising")
+        elif record:
+            tail.append("released" if record.is_released else "graduated")
         if nature:
             tail.append(nature.title())
         if view:
@@ -1021,7 +1033,8 @@ class PokeWindow:
             self.text(tx, ty, self._ellipsize(" · ".join(tail), "caption", cw - MINI_BOX - 50), "caption", "secondary")
         y += h + 10
 
-        y = self.draw_stats_card(y, x0, cw, view, is_current) + 10
+        failed = sid in (self.payload or {}).get("meta_failed", set()) and not self.busy and not self.refresh_again
+        y = self.draw_stats_card(y, x0, cw, view, is_current, failed) + 10
 
         # evolution line: the Pokémon being raised shows reached forms + blurred previews
         if raising and a and comp.line:
@@ -1054,13 +1067,13 @@ class PokeWindow:
             ry += 38
         return y + h + 12
 
-    def draw_stats_card(self, y, x0, cw, view, live: bool) -> int:
+    def draw_stats_card(self, y, x0, cw, view, live: bool, failed: bool = False) -> int:
         """Abilities and the six stats with IVs; `live` = the Pokémon being raised (shows its luck)."""
         card = self.card(x0, y, cw, 10)
         cy = y + 12
         self.text(x0 + 18, cy, "STATS" if live else "STATS AT LV 100", "captionB", "secondary")
         if view is None:
-            self.text(x0 + cw - 18, cy, "loading…" if self.busy else "unavailable offline", "caption", "tertiary", anchor="ne")
+            self.text(x0 + cw - 18, cy, "unavailable offline" if failed else "loading…", "caption", "tertiary", anchor="ne")
             cy += 30
             self.fit_card(card, x0, y, cw, cy - y)
             return cy
