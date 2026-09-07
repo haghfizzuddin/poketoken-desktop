@@ -27,7 +27,7 @@ def entry(day: str, hour: int, tokens: int, model="claude-fable-5-1", cache_read
 def comp_with_history(rows: dict[str, int]) -> C.Companion:
     tmp = Path(tempfile.mkdtemp())
     c = C.Companion(FakeAPI(), tmp / "s.json", rng=random.Random(1), clock=lambda: 0, log=lambda m: None)
-    c.state.history = {d: {"tokens": t} for d, t in rows.items()}
+    c.state.history = {d: (dict(t) if isinstance(t, dict) else {"tokens": t}) for d, t in rows.items()}
     return c
 
 

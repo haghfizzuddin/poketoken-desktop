@@ -46,6 +46,28 @@ WEEKLY_GOAL_MIN = 50_000_000           # the weekly goal never drops below this
 WEEKLY_GOAL_LOOKBACK = 4               # median of up to this many previous complete weeks
 WEEKLY_GOAL_MIN_WEEKS = 2              # ...but needs at least this many to unlock
 
+# Rare Candy grants (replaces upstream's limit-window grants): consistency, not volume
+STREAK_MILESTONES = [(3, 1), (7, 2), (14, 3), (30, 5)]   # (streak days, candies)
+STREAK_REPEAT_DAYS = 30                                   # past 30: every further 30 days pays 5
+STREAK_REPEAT_CANDY = 5
+
+
+def streak_milestones_reached(days: int) -> list[tuple[int, int]]:
+    out = [(m, c) for m, c in STREAK_MILESTONES if days >= m]
+    k = 2
+    while STREAK_REPEAT_DAYS * k <= days:
+        out.append((STREAK_REPEAT_DAYS * k, STREAK_REPEAT_CANDY))
+        k += 1
+    return out
+
+
+def next_streak_milestone(days: int) -> tuple[int, int]:
+    for m, c in STREAK_MILESTONES:
+        if days < m:
+            return m, c
+    nxt = (days // STREAK_REPEAT_DAYS + 1) * STREAK_REPEAT_DAYS
+    return nxt, STREAK_REPEAT_CANDY
+
 NATURES = ["hardy", "lonely", "brave", "adamant", "naughty",
            "bold", "docile", "relaxed", "impish", "lax",
            "timid", "hasty", "serious", "jolly", "naive",
@@ -408,6 +430,8 @@ class Companion:
                 s.claimed_today_tokens_by_provider = ledger
                 self._credit(delta)
 
+        if s.install_baseline_set:
+            self.evaluate_candy_grants(today_date)
         if self.event_until is not None and self.clock() > self.event_until:
             self.just_graduated = self.just_evolved_to = None
             self.event_until = None
@@ -651,6 +675,47 @@ class Companion:
         target = max(WEEKLY_GOAL_MIN, int(statistics.median(totals[k] for k in previous)))
         return {"week": this_week, "current": current, "target": target,
                 "progress": min(1.0, current / target), "weeks_needed": 0}
+
+    def evaluate_candy_grants(self, today: str) -> list[dict]:
+        """Pay satisfied windows once. Streak milestones track the highest one paid in the current
+        run (`streak_paid`), so a run whose start shifts earlier (late log entries) does not
+        re-pay; a run that starts later is a new run and pays from 3 days again. Weekly goals
+        are keyed by ISO week. The first evaluation only seeds: windows already satisfied at
+        install never pay retroactively (upstream's rule)."""
+        s = self.state
+        t = s.candy_grant_tier
+        grants: list[dict] = []
+        streak_due: list[tuple[int, int]] = []
+        n, start, _ = self.streak(today)
+        if start:
+            start_i = int(start.replace("-", ""))
+            if t.get("streak_start", 0) == 0 or start_i > t.get("streak_start", 0):
+                t["streak_start"], t["streak_paid"] = start_i, 0        # a new run
+            elif start_i < t["streak_start"]:
+                t["streak_start"] = start_i                            # same run, extended backward
+            paid = t.get("streak_paid", 0)
+            streak_due = [(m, c) for m, c in streak_milestones_reached(n) if m > paid]
+        g = self.weekly_goal(today)
+        week_key = f"week:{g['week']}"
+        week_due = bool(g["target"]) and g["progress"] >= 1 and week_key not in t
+        if not s.candy_feature_seeded:
+            if streak_due:
+                t["streak_paid"] = max(m for m, _ in streak_due)
+            if week_due:
+                t[week_key] = 1
+            s.candy_feature_seeded = True
+            return []
+        for m, c in streak_due:
+            t["streak_paid"] = m
+            s.inventory["rareCandy"] = s.inventory.get("rareCandy", 0) + c
+            self._emit("candy", count=c, reason=f"{m}-day streak")
+            grants.append({"key": f"streak:{m}", "count": c, "reason": f"{m}-day streak"})
+        if week_due:
+            t[week_key] = 1
+            s.inventory["rareCandy"] = s.inventory.get("rareCandy", 0) + RARE_CANDY_WEEKLY_GRANT
+            self._emit("candy", count=RARE_CANDY_WEEKLY_GRANT, reason="weekly goal reached")
+            grants.append({"key": week_key, "count": RARE_CANDY_WEEKLY_GRANT, "reason": "weekly goal reached"})
+        return grants
 
     # ---------------------------------------------------------------- shop
     def shop_entries(self) -> list[dict]:

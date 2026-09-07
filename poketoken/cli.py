@@ -51,7 +51,9 @@ class App:
         n, start, counts = self.companion.streak(today)
         if n == 0:
             return "no streak yet — a day counts at 1M+ tokens"
-        return f"{n}-day streak since {start}" + ("  ✓ today counts" if counts else "  · today not yet counted")
+        nd, nc = C.next_streak_milestone(n)
+        return (f"{n}-day streak since {start} · +{nc} candy at {nd} days"
+                + ("  ✓ today counts" if counts else "  · today not yet counted"))
 
     def goal_line(self, today: str) -> str:
         g = self.companion.weekly_goal(today)
