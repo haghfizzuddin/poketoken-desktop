@@ -65,10 +65,14 @@ def _round_pts(x1, y1, x2, y2, r):
             x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
 
 
-def resolve_sprites(app) -> dict:
-    """Download (or hit the disk cache for) every sprite the window may need. Runs off-thread."""
+def resolve_sprites(app, extra: tuple = ()) -> dict:
+    """Download (or hit the disk cache for) every sprite the window may need. Runs off-thread.
+    `extra` = ((species_id, shiny), ...) for species shown outside the normal views (detail page)."""
     api, s = app.api, app.companion.state
     out: dict = {"egg": api.egg_sprite()}
+    for sid, shiny in extra:
+        out[("anim", sid, shiny)] = api.sprite(sid, animated=True, shiny=shiny)
+        out[("static", sid, shiny)] = api.sprite(sid, animated=False, shiny=shiny)
     a = s.active
     if a is not None:
         out[("anim", a.current_id, a.is_shiny)] = api.sprite(a.current_id, animated=True, shiny=a.is_shiny)
@@ -93,7 +97,10 @@ class PokeWindow:
         prefs = self._load_prefs()
         self.compact = compact if compact else bool(prefs.get("compact", False)) and compact
         self.dark = bool(prefs.get("dark", False)) if dark is None else dark
-        self.tab = prefs.get("tab", "home") if prefs.get("tab") in dict(TABS) else "home"
+        self.tab = "home"                                   # always open on Home
+        self.detail: int | None = None                      # species shown in the Pokédex detail page
+        self.sprite_scale = int(prefs["sprite_scale"]) if prefs.get("sprite_scale") in (2, 3, 4) else 3
+        self.sprite_subject: tuple = ("egg",)
         self.P = DARK if self.dark else LIGHT
 
         self.lock = threading.Lock()
@@ -119,8 +126,7 @@ class PokeWindow:
         r = self.root = tk.Tk()
         r.title("PokeToken")
         r.configure(bg=self.P["bg"])
-        r.geometry(str(prefs.get("geometry_compact" if self.compact else "geometry_full",
-                                 COMPACT_GEOMETRY if self.compact else FULL_GEOMETRY)).split("+")[0])
+        r.geometry(self._restore_geometry(prefs))
         r.minsize(240, 300)
         self.family = self._pick_font()
         self.F = {
@@ -150,6 +156,10 @@ class PokeWindow:
         self.menu.add_command(label="Refresh now", command=self.refresh, accelerator="Ctrl+R")
         self.menu.add_command(label="Compact view", command=self.toggle_compact)
         self.menu.add_command(label="Dark appearance", command=self.toggle_dark)
+        size_menu = tk.Menu(self.menu, tearoff=0)
+        for n in (2, 3, 4):
+            size_menu.add_command(label=f"{n}×  ({SPRITE_BOX * n} px)", command=lambda n=n: self.set_sprite_scale(n))
+        self.menu.add_cascade(label="Sprite size", menu=size_menu)
         self.menu.add_separator()
         self.menu.add_command(label="Quit", command=self.quit, accelerator="Esc")
 
@@ -165,9 +175,33 @@ class PokeWindow:
         except (OSError, ValueError):
             return {}
 
+    def default_geometry(self) -> str:
+        size = SPRITE_BOX * self.sprite_scale
+        return f"{max(272, size + 64)}x{size + 176}" if self.compact else FULL_GEOMETRY
+
+    def _restore_geometry(self, prefs: dict) -> str:
+        """Saved size for this view, unless it is too narrow for the current sprite scale."""
+        geo = str(prefs.get("geometry_compact" if self.compact else "geometry_full", "")).split("+")[0]
+        try:
+            w = int(geo.split("x")[0])
+        except ValueError:
+            return self.default_geometry()
+        if self.compact and w < SPRITE_BOX * self.sprite_scale + 40:
+            return self.default_geometry()
+        return geo
+
+    def set_sprite_scale(self, n: int) -> None:
+        self.sprite_scale = n
+        self.images.clear()
+        self.sprite_key = None
+        if self.compact:
+            self.root.geometry(self.default_geometry())
+        self._save_prefs()
+        self.render()
+
     def _save_prefs(self) -> None:
         p = self._load_prefs()
-        p.update({"dark": self.dark, "tab": self.tab})
+        p.update({"dark": self.dark, "tab": self.tab, "sprite_scale": self.sprite_scale})
         if self.settled_geometry:
             p["geometry_compact" if self.compact else "geometry_full"] = self.settled_geometry
         try:
@@ -190,13 +224,14 @@ class PokeWindow:
         # The worker must not capture `self`: if it ended up holding the last reference to the
         # Tk root, Tk would be torn down from a non-main thread (Tcl_AsyncDelete abort).
         app, q, lock = self.app, self.q, self.lock
+        extra = ((self.detail, self._species_shiny(self.detail)),) if self.detail else ()
 
         def work():
             try:
                 with lock:
                     snap = app.tick()
                     events = app.companion.drain_events()
-                paths = resolve_sprites(app)
+                paths = resolve_sprites(app, extra)
                 q.put(("ok", {"snap": snap, "events": events, "paths": paths, "at": time.time()}))
             except Exception as e:  # noqa: BLE001
                 q.put(("err", repr(e)))
@@ -252,6 +287,8 @@ class PokeWindow:
             return "A new egg arrived"
         if k == "mint":
             return f"Nature is now {str(ev.get('nature', '')).title()}"
+        if k == "candy":
+            return f"+{ev.get('count')} Rare Candy · {ev.get('reason')}"
         return k
 
     def _toast(self, text: str, seconds: float = 4.0) -> None:
@@ -270,6 +307,7 @@ class PokeWindow:
 
     def set_tab(self, tab: str) -> None:
         self.tab = tab
+        self.detail = None
         self.armed = None
         self.c.yview_moveto(0)
         self._save_prefs()
@@ -290,8 +328,7 @@ class PokeWindow:
         self.compact = not self.compact
         self.settled_geometry = None          # stale until the next <Configure>
         p = self._load_prefs()
-        self.root.geometry(str(p.get("geometry_compact" if self.compact else "geometry_full",
-                                     COMPACT_GEOMETRY if self.compact else FULL_GEOMETRY)).split("+")[0])
+        self.root.geometry(self._restore_geometry(p))
         self.sprite_key = None
         self.render()
 
@@ -362,8 +399,8 @@ class PokeWindow:
         return self.c.create_polygon(_round_pts(x1, y1, x2, y2, r), smooth=True, splinesteps=16,
                                      fill=self.col(fill), outline=self.col(outline) if outline else "", **kw)
 
-    def card(self, x, y, w, h, r=16):
-        return self.rrect(x, y, x + w, y + h, r, fill="card", outline="sep")
+    def card(self, x, y, w, h, r=16, tags=()):
+        return self.rrect(x, y, x + w, y + h, r, fill="card", outline="sep", tags=tags)
 
     def fit_card(self, item, x, y, w, h, r=16):
         self.c.coords(item, *_round_pts(x, y, x + w, y + h, r))
@@ -455,8 +492,11 @@ class PokeWindow:
             y = self.draw_compact(w)
         else:
             y = self.draw_header(w)
-            y = {"home": self.draw_home, "dex": self.draw_dex, "shop": self.draw_shop,
-                 "bag": self.draw_bag}[self.tab](y, x0, cw)
+            if self.tab == "dex" and self.detail is not None:
+                y = self.draw_detail(y, x0, cw)
+            else:
+                y = {"home": self.draw_home, "dex": self.draw_dex, "shop": self.draw_shop,
+                     "bag": self.draw_bag}[self.tab](y, x0, cw)
             y = self.draw_footer(y, x0, cw)
         if self.toast:
             self.draw_toast(w)
@@ -511,7 +551,8 @@ class PokeWindow:
         # hero card
         card = self.card(x0, y, cw, 10)
         cy = y + 12
-        size = SPRITE_BOX * 2
+        size = SPRITE_BOX * self.sprite_scale
+        self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.is_shiny)
         self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="")
         cy += size + 4
         name = comp.display_name()
@@ -629,7 +670,8 @@ class PokeWindow:
             rows.append(("This month", f"{fmt.compact(snap.month.total)} · {fmt.cost(snap.month.cost)}"))
         if snap:
             n, _, counts = comp.streak(snap.today_date)
-            rows.append(("Streak", f"{n} day{'s' if n != 1 else ''}" + (" · today counts" if counts else " · not yet today") if n else "none yet"))
+            nxt_days, nxt_candy = C.next_streak_milestone(n)
+            rows.append(("Streak", f"{n} day{'s' if n != 1 else ''} · +{nxt_candy} candy at {nxt_days}" + ("" if counts else " · not yet today") if n else "none yet"))
             g = comp.weekly_goal(snap.today_date)
             rows.append(("Weekly goal", f"{fmt.compact(g['current'])} / {fmt.compact(g['target'])} · {fmt.percent(g['progress'] * 100)}"
                          if g["target"] else f"unlocks in {g['weeks_needed']} week(s)"))
@@ -676,17 +718,20 @@ class PokeWindow:
             d = species[sid]
             cx = x0 + (i % cols) * (cellw + gap)
             cy = y + (i // cols) * (cellh + gap)
-            self.card(cx, cy, cellw, cellh, 14)
+            tag = f"dex:{sid}"
+            self.card(cx, cy, cellw, cellh, 14, tags=(tag,))
             ph = self.img(self.payload["paths"].get(("static", sid, d["shiny"])) if self.payload else None,
                           int(cellw - 24), "card")
             if ph:
-                self.c.create_image(cx + cellw / 2, cy + 8 + (cellw - 24) / 2, image=ph)
-            self.text(cx + 8, cy + 8, f"#{sid}", "caption", "tertiary")
+                self.c.create_image(cx + cellw / 2, cy + 8 + (cellw - 24) / 2, image=ph, tags=(tag,))
+            self.text(cx + 8, cy + 8, f"#{sid}", "caption", "tertiary", tags=(tag,))
             if d["shiny"]:
-                self.text(cx + cellw - 8, cy + 6, "✦", "captionB", "yellow", anchor="ne")
+                self.text(cx + cellw - 8, cy + 6, "✦", "captionB", "yellow", anchor="ne", tags=(tag,))
             self.dot(cx + 12, cy + cellh - 14, 3.5, RARITY_COLOR[d["rarity"]])
             self.text(cx + 20, cy + cellh - 22, self._ellipsize(d["name"], "captionB", cellw - 28), "captionB",
-                      "label" if not d["raising"] else "blue")
+                      "label" if not d["raising"] else "blue", tags=(tag,))
+            self.c.tag_bind(tag, "<Button-1>", lambda e, sid=sid: self.open_detail(sid))
+            self._hand(tag)
         rows_n = (len(species) + cols - 1) // cols
         y += rows_n * (cellh + gap) + 8
 
@@ -712,6 +757,118 @@ class PokeWindow:
                 ry += 52
             y += h + 12
         return y
+
+    # --------------------------------------------------------------- detail
+    def _species_shiny(self, sid: int | None) -> bool:
+        s = self.app.companion.state
+        if sid is None:
+            return False
+        if any(e.is_shiny and sid in e.chain_order for e in s.dex):
+            return True
+        a = s.active
+        return bool(a and a.is_shiny and sid in a.path_ids[: a.stage_index + 1])
+
+    def open_detail(self, sid: int) -> None:
+        self.detail = sid
+        self.c.yview_moveto(0)
+        self.render()
+        self.refresh()                       # fetch this species' animated sprite in the background
+
+    def close_detail(self) -> None:
+        self.detail = None
+        self.c.yview_moveto(0)
+        self.render()
+
+    def draw_detail(self, y, x0, cw) -> int:
+        comp, s = self.app.companion, self.app.companion.state
+        sid = self.detail
+        shiny = self._species_shiny(sid)
+        entries = [e for e in s.dex if sid in e.chain_order]
+        a = s.active
+        raising = bool(a and sid in a.path_ids[: a.stage_index + 1])
+        # name / chain from whatever record knows this species
+        name, chain = f"#{sid}", [sid]
+        if entries:
+            name, chain = entries[0].name(sid, s.language), list(entries[0].chain_order)
+        elif raising and comp.line:
+            name, chain = comp.line.name(sid, s.language), list(a.path_ids[: a.stage_index + 1])
+        rarity = entries[0].rarity if entries else (a.rarity if raising and a else "common")
+
+        self.text(x0, y + 4, "‹ Pokédex", "headline", "blue", tags=("back",))
+        self.c.tag_bind("back", "<Button-1>", lambda e: self.close_detail())
+        self._hand("back")
+        self.text(x0 + cw, y + 6, f"#{sid:03d}", "captionB", "tertiary", anchor="ne")
+        y += 30
+
+        card = self.card(x0, y, cw, 10)
+        cy = y + 12
+        size = SPRITE_BOX * self.sprite_scale
+        self.sprite_subject = ("mon", sid, shiny)
+        self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="")
+        cy += size + 4
+        self.text(x0 + cw / 2, cy, name + ("  ✦" if shiny else ""), "title", "yellow" if shiny else "label", anchor="n")
+        cy += 34
+        pills = [(rarity.title(), RARITY_COLOR[rarity])]
+        if shiny:
+            pills.append(("Shiny owned", "yellow"))
+        if raising:
+            pills.append(("Raising now", "blue"))
+        grads = sum(1 for e in entries if not e.is_released and e.final_id == sid)
+        if grads:
+            pills.append((f"Graduated ×{grads}", "green"))
+        total = sum(self.measure(t, "captionB") + 16 for t, _ in pills) + 6 * (len(pills) - 1)
+        px = x0 + cw / 2 - total / 2
+        for t, colr in pills:
+            px += self.pill(px, cy, t, colr) + 6
+        cy += 36
+        self.fit_card(card, x0, y, cw, cy - y)
+        y = cy + 12
+
+        # evolution line of the record
+        self.card(x0, y, cw, 118)
+        self.text(x0 + 18, y + 12, "EVOLUTION LINE", "captionB", "secondary")
+        n = max(1, len(chain))
+        each = (cw - 24) / n
+        for i, cid in enumerate(chain):
+            cx = x0 + 12 + each * i + each / 2
+            ty = y + 34
+            if cid == sid:
+                self.rrect(cx - 34, ty - 4, cx + 34, ty + 72, 12,
+                           fill=_blend(self.P["blue"], self.P["card"], 0.86 if not self.dark else 0.75))
+            ph = self.img(self.payload["paths"].get(("static", cid, self._species_shiny(cid))) if self.payload else None, 52, "card")
+            if ph:
+                self.c.create_image(cx, ty + 26, image=ph)
+            label = entries[0].name(cid, s.language) if entries else (comp.line.name(cid, s.language) if comp.line else f"#{cid}")
+            self.text(cx, ty + 56, self._ellipsize(label, "caption", each - 8), "caption",
+                      "label" if cid == sid else "secondary", anchor="n")
+            if i < n - 1:
+                self.text(x0 + 12 + each * (i + 1), ty + 26, "›", "title2", "tertiary", anchor="center")
+            tag = f"dex:{cid}"
+            if cid != sid:
+                self.c.tag_bind(tag, "<Button-1>", lambda e, c=cid: self.open_detail(c))
+        y += 118 + 12
+
+        # records
+        rows = []
+        if raising and a:
+            rows.append((f"Raising · stage {a.stage_index + 1} of {a.total_forms}", (a.nature or "").title(), "now", "blue"))
+        for e in sorted(entries, key=lambda e: e.caught_at or "", reverse=True):
+            rows.append((("released" if e.is_released else "graduated") + f" as {e.name(e.final_id, s.language)}",
+                         (e.nature or "").title(), (e.caught_at or "")[:10], "gray" if e.is_released else "green"))
+        h = 12 + 38 * max(1, len(rows)) + 4
+        self.card(x0, y, cw, h)
+        self.text(x0 + 18, y + 12, "RECORDS", "captionB", "secondary")
+        ry = y + 30
+        if not rows:
+            self.text(x0 + 18, ry, "no records", "sub", "tertiary")
+        for i, (what, nature, when, colr) in enumerate(rows):
+            self.dot(x0 + 22, ry + 9, 3.5, colr)
+            self.text(x0 + 32, ry, self._ellipsize(what, "body", cw - 150), "body", "label")
+            self.text(x0 + cw - 18, ry + 1, f"{nature} · {when}".strip(" ·"), "caption", "secondary", anchor="ne")
+            if i < len(rows) - 1:
+                self.sep(x0 + 18, ry + 30, cw - 36)
+            ry += 38
+        return y + h + 12
 
     # ----------------------------------------------------------------- shop
     def draw_shop(self, y, x0, cw) -> int:
@@ -807,8 +964,9 @@ class PokeWindow:
         snap = self.payload["snap"] if self.payload else None
         state = comp.display_state
         accent = STATE_COLOR.get(state, "blue")
-        size = SPRITE_BOX * 2
+        size = SPRITE_BOX * self.sprite_scale
         y = 10
+        self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.is_shiny)
         self.sprite_item = self.c.create_image(w / 2, y + size / 2, image="")
         y += size
         name = comp.display_name()
@@ -848,14 +1006,18 @@ class PokeWindow:
         if self.sprite_item is None:
             return
         comp = self.app.companion
-        a = comp.state.active
-        key = ("egg", self.dark) if a is None else ("mon", a.current_id, a.is_shiny, self.dark, self.compact)
-        self.speed = SPEED.get(comp.display_state, 1.0)
+        subject = self.sprite_subject
+        key = subject + (self.dark, self.compact, self.sprite_scale)
+        self.speed = SPEED.get(comp.display_state, 1.0) if subject[0] == "egg" or subject[1] == (comp.state.active.current_id if comp.state.active else None) else 1.0
         if key != self.sprite_key or not self.frames:
             self.sprite_key = key
             paths = self.payload["paths"] if self.payload else {}
-            path = paths.get("egg") if a is None else paths.get(("anim", a.current_id, a.is_shiny))
-            self._load_frames(path, static=(a is None), bg_key="card" if not self.compact else "bg")
+            if subject[0] == "egg":
+                path, static = paths.get("egg"), True
+            else:
+                path = paths.get(("anim", subject[1], subject[2])) or paths.get(("static", subject[1], subject[2]))
+                static = bool(path) and str(path).endswith(".png")
+            self._load_frames(path, static=static, bg_key="card" if not self.compact else "bg")
         if self.frames:
             self.c.itemconfig(self.sprite_item, image=self.frames[self.frame_idx % len(self.frames)])
             if len(self.frames) > 1:
@@ -869,7 +1031,7 @@ class PokeWindow:
         self.frames, self.durations, self.frame_idx = [], [], 0
         if not path or not Path(path).exists():
             return
-        scale = 2
+        scale = self.sprite_scale
         bg = _rgb(self.P[bg_key])
         try:
             im = Image.open(path)

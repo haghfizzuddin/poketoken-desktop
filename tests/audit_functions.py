@@ -262,6 +262,13 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win._toast("hello"); win.render(); grab(win, "win-rich-toast")
         win._show_menu(Ev(x_root=100, y_root=100)); win.root.update(); win.menu.unpost()
         win.bring_to_front(); win.root.update()
+        win.set_tab("dex"); win.open_detail(18); win.root.update()
+        t0 = time.time()
+        while win.busy and time.time() - t0 < 20:          # detail refresh fetches the species sprite
+            win.root.update(); time.sleep(0.05)
+        win.render(); grab(win, "win-rich-detail")
+        win.open_detail(2); win.root.update(); win.close_detail()
+        win.set_sprite_scale(2); win.set_sprite_scale(3); win.root.update()
         win.toggle_dark(); win.set_tab("home"); grab(win, "win-rich-dark"); win.toggle_dark()
         win.toggle_compact(); win.root.update(); win._show_menu(Ev(x_root=50, y_root=50)); win.menu.unpost()
         grab(win, "win-rich-compact"); win.toggle_compact()
