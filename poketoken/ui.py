@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PIL import Image, ImageFilter, ImageSequence, ImageTk
 
-from . import companion as C, fmt, instance
+from . import companion as C, fmt, instance, notify
 
 LIGHT = dict(bg="#F2F2F7", card="#FFFFFF", sep="#E5E5EA", fill="#E9E9EB", fill2="#F4F4F6",
              label="#1C1C1E", secondary="#6E6E73", tertiary="#AEAEB2",
@@ -203,6 +203,7 @@ class PokeWindow:
         self.menu.add_command(label="Refresh now", command=self.refresh, accelerator="Ctrl+R")
         self.menu.add_command(label="Compact view", command=self.toggle_compact)
         self.menu.add_command(label="Dark appearance", command=self.toggle_dark)
+        self.menu.add_command(label="Notifications: On", command=self.toggle_notify)
         size_menu = tk.Menu(self.menu, tearoff=0)
         for n in (2, 3, 4):
             size_menu.add_command(label=f"{n}×  ({SPRITE_BOX * n} px)", command=lambda n=n: self.set_sprite_scale(n))
@@ -392,10 +393,17 @@ class PokeWindow:
     def _show_menu(self, e) -> None:
         self.menu.entryconfig(1, label="Full view" if self.compact else "Compact view")
         self.menu.entryconfig(2, label="Light appearance" if self.dark else "Dark appearance")
+        self.menu.entryconfig(3, label=f"Notifications: {'On' if notify.enabled(self.app.dir) else 'Off'}")
         try:
             self.menu.tk_popup(e.x_root, e.y_root)
         finally:
             self.menu.grab_release()
+
+    def toggle_notify(self) -> None:
+        on = not notify.enabled(self.app.dir)
+        notify.set_enabled(self.app.dir, on)
+        self._toast(f"Notifications {'on' if on else 'off'}")
+        self.render()
 
     def _act(self, tag: str) -> None:
         """Buttons arm on first click and fire on the second within 3 s (no accidental spending)."""

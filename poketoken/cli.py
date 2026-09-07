@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, battle as B, companion as C, fmt, instance, settings, usage as U
+from . import __version__, battle as B, companion as C, fmt, instance, notify, settings, usage as U
 from .paths import state_dir
 from .pokeapi import PokeAPI
 
@@ -23,6 +23,7 @@ class App:
         self.reader = U.UsageReader()
         self.companion = C.Companion(self.api, self.dir / "state.json", log=self.log)
         self.last: U.Snapshot | None = None
+        self.notified: set[tuple] = set()      # companion events already announced on the desktop
 
     def log(self, msg: str) -> None:
         try:
@@ -45,8 +46,26 @@ class App:
             self.companion.record_history(U.day_stats(entries), snap.today_date)
         self.companion.update(snap.today_by_provider(), snap.today_date, snap.burn_tier,
                               limit_warning=False, has_usage_data=snap.has_data)
+        self.notify_new_events()
         self.last = snap
         return snap
+
+    def notify_new_events(self) -> int:
+        """Desktop-notify companion events not announced yet; returns how many were sent.
+
+        Events stay in `companion.events` until a consumer drains them and tick() may run several
+        times before that, so each announced event is remembered by its `at` stamp and fields.
+        """
+        sent, seen = 0, set()
+        for ev in self.companion.events:
+            key = tuple(sorted((k, str(v)) for k, v in ev.items()))
+            seen.add(key)
+            if key in self.notified:
+                continue
+            self.notified.add(key)
+            sent += int(notify.notify_event(ev, self.dir))
+        self.notified &= seen                  # drained events never come back; keep the set small
+        return sent
 
     def streak_line(self, today: str) -> str:
         n, start, counts = self.companion.streak(today)
@@ -402,6 +421,27 @@ def cmd_debug(app: App, args) -> int:
     return 0
 
 
+def cmd_notify(app: App, args) -> int:
+    d = app.dir
+    if args.action in ("on", "off"):
+        notify.set_enabled(d, args.action == "on")
+        print(f"notifications {args.action}  ({notify.settings_path(d)})")
+        return 0
+    be = notify.backend()
+    if args.action == "test":
+        if be is None:
+            print("no notification backend: needs notify-send on PATH, or powershell.exe (WSL / Windows)")
+            return 1
+        ok = notify.send("PokeToken", "Notifications are working.", d, wait=15)
+        print(f"backend {be}: {'accepted' if ok else 'failed'}  (details: {d / notify.LOG_FILE})")
+        if not notify.enabled(d):
+            print("note: notifications are off, events are not announced — `poketoken notify on`")
+        return 0 if ok else 1
+    print(f"notifications: {'on' if notify.enabled(d) else 'off'} · backend: {be or 'none'} · "
+          f"settings: {notify.settings_path(d)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="poketoken", description="PokeTokenBar for WSL — tokens → Pokémon")
     p.add_argument("--state-dir", type=Path, help="override the state directory")
@@ -441,12 +481,15 @@ def main(argv: list[str] | None = None) -> int:
     tg = sub.add_parser("toggle", help="open the window in the background, or close it if it is open")
     window_flags(tg)
     sub.add_parser("debug", help="scan roots, timings, raw companion state")
+    nt = sub.add_parser("notify", help="desktop notifications: on | off | test | status")
+    nt.add_argument("action", nargs="?", choices=["on", "off", "test", "status"], default="status")
     args = p.parse_args(argv)
 
     app = App(args.state_dir)
     handler = {"status": cmd_status, "watch": cmd_watch, "statusline": cmd_statusline, "refresh": cmd_refresh,
                "dex": cmd_dex, "shop": cmd_shop, "bag": cmd_bag, "pet": cmd_pet, "debug": cmd_debug,
                "history": cmd_history, "stats": cmd_stats, "card": cmd_card, "battle": cmd_battle,
+               "notify": cmd_notify,
                "app": cmd_app, "window": cmd_app, "ui": cmd_app, "open": cmd_app,
                "close": cmd_close, "toggle": cmd_toggle, None: cmd_status}[args.cmd]
     return handler(app, args)

@@ -68,6 +68,7 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 | `poketoken statusline` | one compact line for the Claude Code status line |
 | `poketoken refresh` | a single refresh tick (cron / systemd timers) |
 | `poketoken dex` · `shop` · `bag` | Pokédex, token shop (`--buy candy\|mint\|charm\|egg\|egg-uncommon\|egg-rare`), inventory (`--use candy\|mint`) |
+| `poketoken notify on\|off\|test\|status` | desktop notifications for hatch / evolve / graduate / candy / egg |
 | `poketoken debug` | scan roots, timings, raw save |
 
 Window flags: `--dark` / `--light`, `--compact`, `-i SECONDS` (refresh, default 30).
@@ -91,6 +92,7 @@ Every call is also a refresh tick, so the game advances even with the window clo
 | `events.log` | hatch / evolve / graduate / shop events and errors |
 | `sprites/`, `cache/` | PokéAPI sprites and responses (species and lines forever, base index 30 days) |
 | `ui.json`, `app.pid`, `app.log` | window size/appearance, running-instance pid, background log |
+| `settings.json`, `notify.log` | notifications on/off, notification backend output |
 
 Logs are read from `~/.claude/projects` and `~/.config/claude/projects`, or from
 `CLAUDE_CONFIG_DIR` (comma-separated, `projects` appended) exactly like upstream.
@@ -110,11 +112,19 @@ writes into the 5-minute (1.25×) and 1-hour (2×) TTLs the logs record.
 WSLg cannot display borderless *override-redirect* windows, so upstream's floating desktop pet
 has no direct equivalent here; the compact view is the stand-in.
 
+### Desktop notifications
+
+Hatch, evolve, graduate, Rare Candy grants and new eggs pop up as desktop notifications: through
+`notify-send` where a Linux desktop has it, otherwise as a Windows toast via `powershell.exe`
+(WSL and native Windows). Any refresh can fire one, so the window need not be open. Toggle with
+`poketoken notify on|off` or the window menu; `poketoken notify test` sends a sample and reports
+the backend. Output of the backend lands in `notify.log`.
+
 ## Not ported (yet)
 
 Official 5-hour / weekly limit gauges and the Rare Candy grants they trigger (needs the
 claude.ai limits API with your OAuth token), the other 11 CLI providers, the Ditto disguise,
-desktop notifications, save transfer. The save uses upstream's field names but is not
+save transfer. The save uses upstream's field names but is not
 byte-compatible with the macOS app's Codable output.
 
 ## Development
