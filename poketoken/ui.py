@@ -20,7 +20,7 @@ import tkinter.font as tkfont
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageSequence, ImageTk
+from PIL import Image, ImageFilter, ImageSequence, ImageTk
 
 from . import companion as C, fmt, instance
 
@@ -46,6 +46,10 @@ TABS = [("home", "Home"), ("dex", "Pokédex"), ("shop", "Shop"), ("bag", "Bag")]
 SPRITE_BOX = 96
 FULL_GEOMETRY = "392x700"
 COMPACT_GEOMETRY = "272x352"
+LINE_SPRITE = 52            # sprite size in the EVOLUTION LINE card
+PREVIEW_BLUR = 8.0          # Gaussian radius of the next form's preview at progress 0, for a LINE_SPRITE px sprite
+PREVIEW_DARK = 0.92         # how far its colours sit toward the silhouette at progress 0 (1 = solid)
+PREVIEW_LEVELS = 10         # progress buckets a preview is rendered (and cached) at
 
 
 def _blend(a: str, b: str, t: float) -> str:
@@ -65,6 +69,45 @@ def _round_pts(x1, y1, x2, y2, r):
             x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
 
 
+# ------------------------------------------------------------ evolution preview (pure, no display)
+def blur_radius(progress: float, size: int = LINE_SPRITE) -> float:
+    """Blur of the next form's preview: PREVIEW_BLUR at progress 0 (scaled to the sprite size),
+    falling linearly to 0 at progress 1."""
+    p = min(1.0, max(0.0, progress))
+    return PREVIEW_BLUR * (size / LINE_SPRITE) * (1.0 - p)
+
+
+def preview_level(progress: float) -> float:
+    """Progress bucketed down to one of PREVIEW_LEVELS steps (0.0, 0.1, … 1.0), the resolution
+    previews are rendered and cached at. Only a true 1.0 reaches the sharp bucket."""
+    p = min(1.0, max(0.0, progress))
+    return int(p * PREVIEW_LEVELS) / PREVIEW_LEVELS
+
+
+def silhouette(im: Image.Image, colour: str) -> Image.Image:
+    """The sprite's alpha mask filled with one solid colour: a full silhouette."""
+    out = Image.new("RGBA", im.size, _rgb(colour))
+    out.putalpha(im.getchannel("A"))
+    return out
+
+
+def preview_image(im: Image.Image, progress: float, colour: str) -> Image.Image:
+    """The next form's preview: the sprite blurred and darkened toward its silhouette at
+    progress 0, sharp and in full colour at progress 1 (it snaps clear when it evolves anyway)."""
+    p = min(1.0, max(0.0, progress))
+    if p >= 1.0:
+        return im.copy()
+    out = Image.blend(im, silhouette(im, colour), PREVIEW_DARK * (1.0 - p))
+    radius = blur_radius(p, max(im.size))
+    if radius > 0:
+        # transparent pixels take the silhouette colour first, so the blur bleeds that and not black
+        flat = Image.new("RGBA", im.size, _rgb(colour))
+        flat.paste(out, mask=out)
+        flat.putalpha(out.getchannel("A"))
+        out = flat.filter(ImageFilter.GaussianBlur(radius))
+    return out
+
+
 def resolve_sprites(app, extra: tuple = ()) -> dict:
     """Download (or hit the disk cache for) every sprite the window may need. Runs off-thread.
     `extra` = ((species_id, shiny), ...) for species shown outside the normal views (detail page)."""
@@ -76,7 +119,7 @@ def resolve_sprites(app, extra: tuple = ()) -> dict:
     a = s.active
     if a is not None:
         out[("anim", a.current_id, a.is_shiny)] = api.sprite(a.current_id, animated=True, shiny=a.is_shiny)
-        for sid in a.path_ids[: a.stage_index + 1]:
+        for sid in a.path_ids[: a.stage_index + 1] + a.planned_path_ids[a.stage_index + 1:]:   # reached + still-hidden forms
             out[("static", sid, a.is_shiny)] = api.sprite(sid, animated=False, shiny=a.is_shiny)
     wanted: set[tuple[int, bool]] = set()
     for e in s.dex[-80:]:
@@ -471,6 +514,48 @@ class PokeWindow:
         self.images[key] = ph
         return ph
 
+    def preview_img(self, path, size: int, progress: float | None, bg_key="card"):
+        """Still-hidden form → PhotoImage of `size` px on the card colour: a solid tertiary
+        silhouette when `progress` is None, otherwise the sprite blurred and darkened toward that
+        silhouette by how far the current stage still has to go (see preview_image). Cached per
+        PREVIEW_LEVELS bucket of progress, so re-rendering does not re-blur."""
+        if not path:
+            return None
+        level = None if progress is None else preview_level(progress)
+        key = ("preview", str(path), size, bg_key, self.dark, level)
+        if key in self.images:
+            return self.images[key]
+        try:
+            im = Image.open(path).convert("RGBA")
+        except (OSError, ValueError):
+            return None
+        if max(im.size) != size:                        # same fit as img()
+            method = Image.NEAREST if size % max(im.size) == 0 else Image.LANCZOS
+            im = im.resize((max(1, im.width * size // max(im.size)), max(1, im.height * size // max(im.size))), method)
+        colour = self.P["tertiary"]
+        im = silhouette(im, colour) if level is None else preview_image(im, level, colour)
+        box = Image.new("RGBA", (size, size), _rgb(self.P[bg_key]))
+        box.alpha_composite(im, ((size - im.width) // 2, size - im.height))
+        ph = ImageTk.PhotoImage(box)
+        self.images[key] = ph
+        return ph
+
+    def draw_future_form(self, cx, cy, i: int) -> None:
+        """A still-hidden form of the active Pokémon, index `i` of its planned line, centred on
+        (cx, cy): the next form as a blurred preview that clears as progress rises, later forms
+        as a solid silhouette, and the grey '?' while its sprite is not on disk yet."""
+        comp = self.app.companion
+        a = comp.state.active
+        ph = None
+        if a and self.payload and a.stage_index < i < len(a.planned_path_ids):
+            path = self.payload["paths"].get(("static", a.planned_path_ids[i], a.is_shiny))
+            ph = self.preview_img(path, LINE_SPRITE, comp.progress if i == a.stage_index + 1 else None)
+        if ph:
+            self.c.create_image(cx, cy, image=ph)
+        else:
+            self.c.create_oval(cx - 24, cy - 24, cx + 24, cy + 24, fill=self.P["fill"], outline="")
+            self.text(cx, cy, "?", "title2", "tertiary", anchor="center")
+
     def _ellipsize(self, s: str, font: str, maxw: int) -> str:
         if self.measure(s, font) <= maxw:
             return s
@@ -612,12 +697,11 @@ class PokeWindow:
                     self.rrect(cx - 34, ty - 4, cx + 34, ty + 72, 12,
                                fill=_blend(self.P[accent], self.P["card"], 0.86 if not self.dark else 0.75))
                 if sid is None:
-                    self.c.create_oval(cx - 24, ty + 2, cx + 24, ty + 50, fill=self.P["fill"], outline="")
-                    self.text(cx, ty + 26, "?", "title2", "tertiary", anchor="center")
+                    self.draw_future_form(cx, ty + 26, i)
                     label = "???"
                 else:
                     ph = self.img(self.payload["paths"].get(("static", sid, s.active.is_shiny)) if self.payload else None,
-                                  52, "card")
+                                  LINE_SPRITE, "card")
                     if ph:
                         self.c.create_image(cx, ty + 26, image=ph)
                     else:
@@ -786,12 +870,14 @@ class PokeWindow:
         entries = [e for e in s.dex if sid in e.chain_order]
         a = s.active
         raising = bool(a and sid in a.path_ids[: a.stage_index + 1])
-        # name / chain from whatever record knows this species
-        name, chain = f"#{sid}", [sid]
-        if entries:
-            name, chain = entries[0].name(sid, s.language), list(entries[0].chain_order)
-        elif raising and comp.line:
+        # name / chain from whatever record knows this species; the active Pokémon shows its path
+        # so far plus its planned forms as previews, like Home
+        name, chain, hidden = f"#{sid}", [sid], 0
+        if raising and comp.line:
             name, chain = comp.line.name(sid, s.language), list(a.path_ids[: a.stage_index + 1])
+            hidden = max(0, a.total_forms - len(chain))
+        elif entries:
+            name, chain = entries[0].name(sid, s.language), list(entries[0].chain_order)
         rarity = entries[0].rarity if entries else (a.rarity if raising and a else "common")
 
         self.text(x0, y + 4, "‹ Pokédex", "headline", "blue", tags=("back",))
@@ -827,24 +913,30 @@ class PokeWindow:
         # evolution line of the record
         self.card(x0, y, cw, 118)
         self.text(x0 + 18, y + 12, "EVOLUTION LINE", "captionB", "secondary")
-        n = max(1, len(chain))
+        n = max(1, len(chain) + hidden)
         each = (cw - 24) / n
-        for i, cid in enumerate(chain):
+        for i, cid in enumerate(chain + [None] * hidden):
             cx = x0 + 12 + each * i + each / 2
             ty = y + 34
             if cid == sid:
                 self.rrect(cx - 34, ty - 4, cx + 34, ty + 72, 12,
                            fill=_blend(self.P["blue"], self.P["card"], 0.86 if not self.dark else 0.75))
-            ph = self.img(self.payload["paths"].get(("static", cid, self._species_shiny(cid))) if self.payload else None, 52, "card")
-            if ph:
-                self.c.create_image(cx, ty + 26, image=ph)
-            label = entries[0].name(cid, s.language) if entries else (comp.line.name(cid, s.language) if comp.line else f"#{cid}")
+            if cid is None:
+                self.draw_future_form(cx, ty + 26, i)
+                label = "???"
+            else:
+                ph = self.img(self.payload["paths"].get(("static", cid, self._species_shiny(cid))) if self.payload else None,
+                              LINE_SPRITE, "card")
+                if ph:
+                    self.c.create_image(cx, ty + 26, image=ph)
+                label = (comp.line.name(cid, s.language) if raising and comp.line
+                         else entries[0].name(cid, s.language) if entries else f"#{cid}")
             self.text(cx, ty + 56, self._ellipsize(label, "caption", each - 8), "caption",
                       "label" if cid == sid else "secondary", anchor="n")
             if i < n - 1:
                 self.text(x0 + 12 + each * (i + 1), ty + 26, "›", "title2", "tertiary", anchor="center")
             tag = f"dex:{cid}"
-            if cid != sid:
+            if cid is not None and cid != sid:
                 self.c.tag_bind(tag, "<Button-1>", lambda e, c=cid: self.open_detail(c))
         y += 118 + 12
 

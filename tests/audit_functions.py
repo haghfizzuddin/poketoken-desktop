@@ -277,6 +277,7 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win.q.put(("err", "boom")); win._poll()
         win._load_frames(scratch / "missing.gif", static=False, bg_key="card")
         win._ellipsize("a very very long label that must be cut", "caption", 40)
+        win.preview_img(win.payload["paths"].get(("static", 3, True)), 52, None); win.draw_future_form(40, 40, 99)   # silhouette + '?' fallback
         win.set_tab("home")
     else:
         grab(win, "win-egg-home") if win.set_tab("home") is None else None
