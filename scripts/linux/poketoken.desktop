@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=PokeToken
+Comment=Your Claude Code tokens, hatched into Pokémon
+Exec=sh -c "$HOME/.local/bin/poketoken toggle"
+Terminal=false
+Categories=Utility;

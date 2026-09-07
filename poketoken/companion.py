@@ -1,0 +1,675 @@
+"""Companion game state — port of `CompanionModel.swift` and the core loop of
+`CompanionStore.swift` (ledger → egg incubation → hatch → evolve → graduate → Pokédex,
+plus the Shop and Bag).
+
+Not ported: Ditto disguise/reveal, Rare Candy grants from official limit windows
+(needs the claude.ai limits API), save-transfer envelopes. The JSON save uses upstream's
+field names but is not byte-compatible with the macOS app's Codable output.
+"""
+from __future__ import annotations
+
+import json
+import os
+import random
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
+
+from .pokeapi import EvoLine, EvoNode, PokeAPI, PokeAPIError, rarity_rank, rarity_includes
+
+# ------------------------------------------------------------------ balance (PokemonBalance & friends)
+EGG_HATCH_THRESHOLD = 5_000_000
+GRADUATION_TOTAL = {
+    "common": 750_000_000,
+    "uncommon": 1_875_000_000,
+    "rare": 3_000_000_000,
+    "legendary": 6_000_000_000,
+}
+RARE_CANDY_XP = 100_000_000
+RARE_CANDY_PRICE = 500_000_000
+RARE_CANDY_WEEKLY_GRANT = 5
+MINT_PRICE = 100_000_000
+SHINY_CHARM_PRICE = 3_000_000_000
+FRESH_EGG_PRICE = 1_000_000_000
+SHINY_DENOMINATOR = 64
+SHINY_CHARM_DENOMINATOR = 48
+EGG_TIERS: list[str | None] = [None, "uncommon", "rare"]
+
+NATURES = ["hardy", "lonely", "brave", "adamant", "naughty",
+           "bold", "docile", "relaxed", "impish", "lax",
+           "timid", "hasty", "serious", "jolly", "naive",
+           "modest", "mild", "quiet", "bashful", "rash",
+           "calm", "gentle", "sassy", "careful", "quirky"]
+
+ITEMS = {
+    "rareCandy":  {"label": "Rare Candy",  "emoji": "🍬", "price": RARE_CANDY_PRICE,  "passive": False,
+                   "blurb": f"+{RARE_CANDY_XP // 1_000_000}M growth for your Pokémon"},
+    "mint":       {"label": "Mint",        "emoji": "🌿", "price": MINT_PRICE,        "passive": False,
+                   "blurb": "re-roll your Pokémon's nature"},
+    "shinyCharm": {"label": "Shiny Charm", "emoji": "✨", "price": SHINY_CHARM_PRICE, "passive": True,
+                   "blurb": f"shiny odds 1/{SHINY_DENOMINATOR} → 1/{SHINY_CHARM_DENOMINATOR}, permanent"},
+}
+STATE_EMOJI = {"egg": "🥚", "sleep": "💤", "idle": "🐾", "working": "⚡", "focus": "🔥",
+               "tired": "😮‍💨", "levelUp": "🎉"}
+
+
+def phase_threshold(rarity: str, total_forms: int, stage_index: int) -> int:
+    """Tokens needed at `stage_index` (0-based) before the next form / graduation.
+    Form i of k costs T·i / (k(k+1)/2), so a line always sums to T regardless of length."""
+    k = max(1, total_forms)
+    i = stage_index + 1
+    return int(round(GRADUATION_TOTAL[rarity] * i / (k * (k + 1) / 2)))
+
+
+def egg_price(tier: str | None) -> int:
+    if tier is None:
+        return FRESH_EGG_PRICE
+    return int(round(FRESH_EGG_PRICE * GRADUATION_TOTAL[tier] / GRADUATION_TOTAL["common"]))
+
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+# ------------------------------------------------------------------ persisted types
+@dataclass
+class MonState:
+    base_id: int
+    path_ids: list[int]
+    planned_path_ids: list[int]
+    stage_index: int = 0
+    used_at_stage: int = 0
+    rarity: str = "common"
+    total_forms: int = 1
+    is_shiny: bool = False
+    nature: str | None = None
+
+    @property
+    def current_id(self) -> int:
+        if not self.path_ids:
+            return self.base_id
+        return self.path_ids[min(self.stage_index, len(self.path_ids) - 1)]
+
+    def to_dict(self) -> dict:
+        return {"baseID": self.base_id, "pathIDs": self.path_ids, "plannedPathIDs": self.planned_path_ids,
+                "stageIndex": self.stage_index, "usedAtStage": self.used_at_stage, "rarity": self.rarity,
+                "totalForms": self.total_forms, "isShiny": self.is_shiny, "nature": self.nature}
+
+    @staticmethod
+    def from_dict(d) -> "MonState | None":
+        try:
+            path = [int(x) for x in d["pathIDs"]]
+            if not path:
+                return None
+            planned = [int(x) for x in d.get("plannedPathIDs") or []] or list(path)
+            stage = min(max(0, int(d["stageIndex"])), len(path) - 1)
+            rarity = d["rarity"] if d.get("rarity") in GRADUATION_TOTAL else "common"
+            return MonState(int(d["baseID"]), path, planned, stage, int(d.get("usedAtStage", 0)), rarity,
+                            int(d.get("totalForms") or len(planned)), bool(d.get("isShiny", False)),
+                            d.get("nature") if d.get("nature") in NATURES else None)
+        except (KeyError, TypeError, ValueError):
+            return None
+
+
+@dataclass
+class DexEntry:
+    id: str
+    base_id: int
+    final_id: int
+    chain_order: list[int]
+    rarity: str
+    caught_at: str | None
+    is_shiny: bool = False
+    nature: str | None = None
+    names: dict[int, dict[str, str]] | None = None
+    released_at: str | None = None
+
+    @property
+    def is_released(self) -> bool:
+        return self.released_at is not None
+
+    def name(self, sid: int, lang: str = "en") -> str:
+        by = (self.names or {}).get(sid, {})
+        return by.get(lang) or by.get("en") or f"#{sid}"
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "baseID": self.base_id, "finalID": self.final_id, "chainOrder": self.chain_order,
+                "rarity": self.rarity, "caughtAt": self.caught_at, "isShiny": self.is_shiny, "nature": self.nature,
+                "names": {str(k): v for k, v in self.names.items()} if self.names else None,
+                "releasedAt": self.released_at}
+
+    @staticmethod
+    def from_dict(d) -> "DexEntry | None":
+        try:
+            names = d.get("names")
+            parsed = {int(k): dict(v) for k, v in names.items()} if isinstance(names, dict) else None
+            return DexEntry(str(d.get("id") or uuid.uuid4()), int(d["baseID"]), int(d["finalID"]),
+                            [int(x) for x in d["chainOrder"]], d["rarity"] if d.get("rarity") in GRADUATION_TOTAL else "common",
+                            d.get("caughtAt"), bool(d.get("isShiny", False)),
+                            d.get("nature") if d.get("nature") in NATURES else None, parsed, d.get("releasedAt"))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+
+
+@dataclass
+class CompanionState:
+    install_baseline_set: bool = False
+    used_since_install: int = 0
+    spent_tokens: int = 0
+    egg_usage: int = 0
+    egg_tier: str | None = None
+    pending_hatch_id: int | None = None
+    claimed_today_tokens_by_provider: dict[str, int] | None = None
+    last_date: str = ""
+    active: MonState | None = None
+    dex: list[DexEntry] = field(default_factory=list)
+    collected_finals: set[str] = field(default_factory=set)
+    language: str = "en"
+    inventory: dict[str, int] = field(default_factory=dict)
+    candy_grant_tier: dict[str, int] = field(default_factory=dict)
+    candy_feature_seeded: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "installBaselineSet": self.install_baseline_set, "usedSinceInstall": self.used_since_install,
+            "spentTokens": self.spent_tokens, "eggUsage": self.egg_usage, "eggTier": self.egg_tier,
+            "pendingHatchID": self.pending_hatch_id,
+            "claimedTodayTokensByProvider": self.claimed_today_tokens_by_provider, "lastDate": self.last_date,
+            "active": self.active.to_dict() if self.active else None, "dex": [d.to_dict() for d in self.dex],
+            "collectedFinals": sorted(self.collected_finals), "language": self.language,
+            "inventory": self.inventory, "candyGrantTier": self.candy_grant_tier,
+            "candyFeatureSeeded": self.candy_feature_seeded,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "CompanionState":
+        """Lenient: a damaged field falls back to its default instead of discarding the save."""
+        def get(key, typ, default):
+            v = d.get(key, default)
+            return v if isinstance(v, typ) and not (typ is int and isinstance(v, bool)) else default
+
+        s = CompanionState()
+        s.install_baseline_set = get("installBaselineSet", bool, False)
+        s.used_since_install = get("usedSinceInstall", int, 0)
+        s.spent_tokens = get("spentTokens", int, 0)
+        s.egg_usage = get("eggUsage", int, 0)
+        s.egg_tier = d.get("eggTier") if d.get("eggTier") in GRADUATION_TOTAL else None
+        s.pending_hatch_id = get("pendingHatchID", int, None) if d.get("pendingHatchID") is not None else None
+        if "claimedTodayTokensByProvider" in d:
+            raw = d.get("claimedTodayTokensByProvider")
+            s.claimed_today_tokens_by_provider = ({str(k): int(v) for k, v in raw.items() if isinstance(v, int)}
+                                                 if isinstance(raw, dict) else {})
+        s.last_date = get("lastDate", str, "")
+        s.active = MonState.from_dict(d["active"]) if isinstance(d.get("active"), dict) else None
+        s.dex = [e for e in (DexEntry.from_dict(x) for x in get("dex", list, []) if isinstance(x, dict)) if e]
+        s.collected_finals = {str(x) for x in get("collectedFinals", list, [])}
+        s.language = get("language", str, "en")
+        s.inventory = {str(k): int(v) for k, v in get("inventory", dict, {}).items() if isinstance(v, int)}
+        s.candy_grant_tier = {str(k): int(v) for k, v in get("candyGrantTier", dict, {}).items() if isinstance(v, int)}
+        s.candy_feature_seeded = get("candyFeatureSeeded", bool, False)
+        return s
+
+
+# ------------------------------------------------------------------ the store
+class Companion:
+    def __init__(self, api: PokeAPI, state_path: Path, rng: random.Random | None = None,
+                 clock: Callable[[], float] = time.time, log: Callable[[str], None] | None = None):
+        self.api = api
+        self.path = Path(state_path)
+        self.rng = rng or random.SystemRandom()
+        self.clock = clock
+        self.log = log or (lambda msg: None)
+        self.state = CompanionState()
+        self.line: EvoLine | None = None
+        self.display_state = "egg"
+        self.just_evolved_to: str | None = None
+        self.just_graduated: str | None = None
+        self.event_until: float | None = None
+        self.events: list[dict] = []
+        self.load()
+
+    # ----------------------------------------------------------- persistence
+    def load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            data = json.loads(self.path.read_text("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("top-level is not an object")
+            self.state = CompanionState.from_dict(data)
+        except (OSError, ValueError) as e:
+            backup = self.path.with_name(f"{self.path.name}.corrupt-{int(self.clock())}")
+            try:
+                self.path.replace(backup)
+            except OSError:
+                pass
+            self.log(f"state file unreadable ({e}); backed up to {backup.name}, starting fresh")
+            self.state = CompanionState()
+
+    def save(self) -> None:
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.state.to_dict(), ensure_ascii=False, indent=1), "utf-8")
+        os.replace(tmp, self.path)
+
+    def _emit(self, kind: str, **kw) -> None:
+        ev = {"kind": kind, "at": self.clock(), **kw}
+        self.events.append(ev)
+        self.log(f"{kind}: " + " ".join(f"{k}={v}" for k, v in kw.items()))
+
+    def drain_events(self) -> list[dict]:
+        ev, self.events = self.events, []
+        return ev
+
+    # -------------------------------------------------------------- derived
+    @property
+    def is_egg(self) -> bool:
+        return self.state.active is None
+
+    @property
+    def egg_progress(self) -> float:
+        return min(1.0, max(0.0, self.state.egg_usage / EGG_HATCH_THRESHOLD))
+
+    @property
+    def egg_tokens_to_hatch(self) -> int:
+        return max(0, EGG_HATCH_THRESHOLD - self.state.egg_usage)
+
+    @property
+    def wallet(self) -> int:
+        return max(0, self.state.used_since_install - self.state.spent_tokens)
+
+    def item_count(self, kind: str) -> int:
+        return self.state.inventory.get(kind, 0)
+
+    @property
+    def owns_shiny_charm(self) -> bool:
+        return self.item_count("shinyCharm") > 0
+
+    def ensure_line(self) -> EvoLine | None:
+        a = self.state.active
+        if a is None:
+            self.line = None
+            return None
+        if self.line is not None and self.line.base_id == a.base_id:
+            return self.line
+        try:
+            self.line = self.api.line(a.base_id)
+        except PokeAPIError as e:
+            self.log(f"line fetch failed for base {a.base_id}: {e}")
+            self.line = None
+        return self.line
+
+    def display_name(self, lang: str | None = None) -> str:
+        a = self.state.active
+        if a is None:
+            return "Token Egg"
+        line = self.ensure_line()
+        return line.name(a.current_id, lang or self.state.language) if line else f"#{a.current_id}"
+
+    @property
+    def threshold(self) -> int:
+        a = self.state.active
+        return phase_threshold(a.rarity, a.total_forms, a.stage_index) if a else EGG_HATCH_THRESHOLD
+
+    @property
+    def progress(self) -> float:
+        a = self.state.active
+        if a is None:
+            return self.egg_progress
+        return min(1.0, a.used_at_stage / self.threshold) if self.threshold else 1.0
+
+    @property
+    def tokens_to_next(self) -> int:
+        a = self.state.active
+        if a is None:
+            return self.egg_tokens_to_hatch
+        return max(0, self.threshold - a.used_at_stage)
+
+    @property
+    def is_final_stage(self) -> bool:
+        a = self.state.active
+        return a is not None and a.stage_index >= a.total_forms - 1
+
+    @property
+    def stage_text(self) -> str:
+        a = self.state.active
+        return f"{a.stage_index + 1}/{a.total_forms}" if a else ""
+
+    def line_items(self) -> list[tuple[int | None, str]]:
+        """(species_id | None for a still-hidden future form, 'done'|'current'|'future')."""
+        a = self.state.active
+        if a is None:
+            return []
+        items: list[tuple[int | None, str]] = []
+        for i, sid in enumerate(a.path_ids[: a.stage_index + 1]):
+            items.append((sid, "current" if i == a.stage_index else "done"))
+        for _ in range(max(0, a.total_forms - len(items))):
+            items.append((None, "future"))
+        return items
+
+    # ------------------------------------------------------------ main loop
+    def update(self, today_tokens_by_provider: dict[str, int], today_date: str, burn_tier: str = "idle",
+               limit_warning: bool = False, has_usage_data: bool = True) -> str:
+        s = self.state
+        today_tokens = sum(today_tokens_by_provider.values())
+        has_current = has_usage_data and bool(today_tokens_by_provider)
+
+        if not s.install_baseline_set:
+            if not has_current:
+                self.display_state = "egg" if s.active is None else "idle"
+                self.ensure_line()
+                return self.display_state
+            # Install baseline: usage before the first real observation never counts.
+            s.install_baseline_set = True
+            s.claimed_today_tokens_by_provider = dict(today_tokens_by_provider)
+            s.last_date = today_date
+            self.save()
+        elif has_current:
+            if s.claimed_today_tokens_by_provider is None:
+                s.claimed_today_tokens_by_provider = dict(today_tokens_by_provider)
+                s.last_date = today_date
+            elif today_date != s.last_date:
+                # New local day: yesterday's ledger is not comparable, credit today's whole total.
+                s.last_date = today_date
+                ledger = {k: 0 for k in s.claimed_today_tokens_by_provider}
+                ledger.update(today_tokens_by_provider)
+                s.claimed_today_tokens_by_provider = ledger
+                self._credit(today_tokens)
+            else:
+                ledger = dict(s.claimed_today_tokens_by_provider)
+                delta = 0
+                for pid, cur in today_tokens_by_provider.items():
+                    prev = ledger.get(pid)
+                    if prev is None:                    # new provider: seed, never back-credit
+                        ledger[pid] = cur
+                        continue
+                    if cur < prev:                      # log rotation/regression: rebase that line
+                        self.log(f"usage regression provider={pid} prev={prev} cur={cur}; rebased")
+                        ledger[pid] = cur
+                        continue
+                    delta += cur - prev
+                    ledger[pid] = cur
+                s.claimed_today_tokens_by_provider = ledger
+                self._credit(delta)
+
+        if self.event_until is not None and self.clock() > self.event_until:
+            self.just_graduated = self.just_evolved_to = None
+            self.event_until = None
+        if s.active is None and s.install_baseline_set:
+            self.ensure_egg_prefetch()
+        if s.active is None and s.egg_usage >= EGG_HATCH_THRESHOLD:
+            self.hatch_if_needed()
+        if s.active is not None and self.line is None and self.ensure_line() is not None:
+            self._process_thresholds(self.line)      # usage banked while offline may already evolve
+        self.display_state = self.compute_state(burn_tier, limit_warning, has_usage_data, today_tokens)
+        self.save()
+        return self.display_state
+
+    def _credit(self, delta: int) -> None:
+        if delta <= 0:
+            return
+        s = self.state
+        s.used_since_install += delta
+        if s.active is None:
+            s.egg_usage += delta
+        else:
+            self.apply_usage(delta)
+
+    def apply_usage(self, delta: int) -> None:
+        """Add growth to the current Pokémon; evolve/graduate at thresholds (overflow carries)."""
+        a = self.state.active
+        if a is None:
+            return
+        a.used_at_stage += delta
+        line = self.ensure_line()
+        if line is None:
+            self.save()
+            return
+        self._process_thresholds(line)
+        self.save()
+
+    def _process_thresholds(self, line: EvoLine) -> None:
+        for _ in range(50):
+            a = self.state.active
+            if a is None:
+                return
+            thr = phase_threshold(a.rarity, a.total_forms, a.stage_index)
+            if a.used_at_stage < thr:
+                return
+            node = line.tree.find(a.current_id)
+            if node is None:
+                return
+            if not node.children:
+                self.graduate()
+                return
+            nxt_i = a.stage_index + 1
+            planned = None
+            if nxt_i < len(a.planned_path_ids):
+                planned = next((c for c in node.children if c.species_id == a.planned_path_ids[nxt_i]), None)
+            if planned is None:
+                planned = self._pick_planned_child(node, a.base_id)
+                a.planned_path_ids = a.path_ids[: a.stage_index + 1] + self._make_plan(planned, a.base_id)
+                a.total_forms = len(a.planned_path_ids)
+                self.log(f"evolve: repaired planned path for base {a.base_id}")
+            a.path_ids = a.path_ids[: a.stage_index + 1] + [planned.species_id]
+            a.stage_index += 1
+            a.used_at_stage -= thr
+            name = line.name(planned.species_id, self.state.language)
+            self.just_evolved_to = name
+            self.event_until = self.clock() + 4
+            self._emit("evolve", species=planned.species_id, name=name, stage=f"{a.stage_index + 1}/{a.total_forms}")
+
+    def _pick_planned_child(self, node: EvoNode, base_id: int) -> EvoNode:
+        fresh = [c for c in node.children
+                 if any(f"{base_id}:{f}" not in self.state.collected_finals for f in c.final_ids)]
+        return self.rng.choice(fresh or node.children)
+
+    def _make_plan(self, root: EvoNode, base_id: int) -> list[int]:
+        plan, node = [root.species_id], root
+        while node.children:
+            node = self._pick_planned_child(node, base_id)
+            plan.append(node.species_id)
+        return plan
+
+    def graduate(self) -> None:
+        a = self.state.active
+        if a is None:
+            return
+        final_id = a.current_id
+        line = self.line
+        self.state.collected_finals.add(f"{a.base_id}:{final_id}")
+        self.state.dex.append(DexEntry(
+            id=str(uuid.uuid4()), base_id=a.base_id, final_id=final_id, chain_order=list(a.path_ids),
+            rarity=a.rarity, caught_at=_now_iso(), is_shiny=a.is_shiny, nature=a.nature,
+            names={sid: dict(line.names[sid]) for sid in a.path_ids if sid in line.names} if line else None))
+        name = line.name(final_id, self.state.language) if line else f"#{final_id}"
+        self.just_graduated = name
+        self.event_until = self.clock() + 6
+        self._emit("graduate", species=final_id, name=name, rarity=a.rarity, shiny=a.is_shiny)
+        self.state.active = None
+        self.line = None
+        self.state.egg_usage = 0
+        self.ensure_egg_prefetch()
+
+    # -------------------------------------------------------------- hatching
+    def choose_base(self) -> int | None:
+        tier = self.state.egg_tier
+        try:
+            index = self.api.base_index()
+        except PokeAPIError as e:
+            self.log(f"base index unavailable ({e}); REST fallback")
+            index = None
+        if index:
+            pool = [(i, c) for i, c in index if tier is None or rarity_includes(tier, c)]
+            if not pool:
+                self.log(f"no candidates for guaranteed {tier}; egg kept")
+                return None
+            weights = [max(1, c // 2) if any(f.startswith(f"{i}:") for f in self.state.collected_finals) else max(1, c)
+                       for i, c in pool]
+            r = self.rng.randrange(sum(weights))
+            for (sid, _), w in zip(pool, weights):
+                r -= w
+                if r < 0:
+                    return sid
+            return pool[-1][0]
+        try:
+            return self.api.random_base_via_rest(self.rng, tier)
+        except PokeAPIError as e:
+            self.log(f"REST fallback failed: {e}")
+            return None
+
+    def ensure_egg_prefetch(self) -> None:
+        s = self.state
+        if s.active is not None:
+            return
+        if s.pending_hatch_id is None:
+            base = self.choose_base()
+            if base is None:
+                return
+            s.pending_hatch_id = base
+            self.save()
+        try:
+            line = self.api.line(s.pending_hatch_id)
+            self.api.sprite(line.base_id, animated=True, shiny=False)
+        except PokeAPIError:
+            pass
+
+    def hatch_if_needed(self) -> bool:
+        s = self.state
+        if s.active is not None or s.egg_usage < EGG_HATCH_THRESHOLD:
+            return False
+        base = s.pending_hatch_id if s.pending_hatch_id is not None else self.choose_base()
+        if base is None:
+            return False
+        try:
+            line = self.api.line(base)
+        except PokeAPIError as e:
+            self.log(f"hatch: line fetch failed for {base}: {e}; egg kept")
+            return False
+        if s.egg_tier is not None and rarity_rank(line.rarity) < rarity_rank(s.egg_tier):
+            self.log(f"hatch: rolled {line.rarity} below guaranteed {s.egg_tier}; re-rolling next tick")
+            s.pending_hatch_id = None
+            self.save()
+            return False
+        overflow = max(0, s.egg_usage - EGG_HATCH_THRESHOLD)
+        s.egg_usage = 0
+        s.egg_tier = None
+        s.pending_hatch_id = None
+        denom = SHINY_CHARM_DENOMINATOR if self.owns_shiny_charm else SHINY_DENOMINATOR
+        is_shiny = self.rng.getrandbits(64) % denom == 0
+        nature = self.rng.choice(NATURES)
+        plan = self._make_plan(line.tree, line.base_id)
+        s.active = MonState(base_id=line.base_id, path_ids=[line.base_id], planned_path_ids=plan,
+                            stage_index=0, used_at_stage=0, rarity=line.rarity, total_forms=len(plan),
+                            is_shiny=is_shiny, nature=nature)
+        self.line = line
+        self.just_evolved_to = None
+        self.event_until = self.clock() + 4
+        self._emit("hatch", species=line.base_id, name=line.name(line.base_id, s.language),
+                   rarity=line.rarity, shiny=is_shiny, nature=nature, forms=len(plan))
+        if overflow > 0:
+            self.apply_usage(overflow)
+        self.save()
+        return True
+
+    def compute_state(self, burn_tier: str, limit_warning: bool, has_usage_data: bool, today: int) -> str:
+        if self.state.active is None:
+            return "egg"
+        if self.just_graduated is not None or (self.event_until is not None and self.clock() < self.event_until):
+            return "levelUp"
+        if limit_warning:
+            return "tired"
+        if not has_usage_data or today == 0:
+            return "sleep"
+        return {"idle": "idle", "normal": "working"}.get(burn_tier, "focus")
+
+    # ---------------------------------------------------------------- shop
+    def shop_entries(self) -> list[dict]:
+        rows = [{"key": k, "label": v["label"], "emoji": v["emoji"], "price": v["price"], "blurb": v["blurb"],
+                 "owned": self.item_count(k), "passive": v["passive"]} for k, v in ITEMS.items()]
+        for tier in EGG_TIERS:
+            label = {None: "Pokémon Egg", "uncommon": "Uncommon Egg", "rare": "Rare Egg"}[tier]
+            blurb = {None: "send off your companion, start over",
+                     "uncommon": "guaranteed Uncommon or better",
+                     "rare": "guaranteed Rare or better"}[tier]
+            rows.append({"key": f"egg:{tier or 'plain'}", "label": label, "emoji": "🥚", "price": egg_price(tier),
+                         "blurb": blurb, "owned": 0, "passive": False})
+        return sorted(rows, key=lambda r: r["price"])
+
+    def buy(self, key: str) -> tuple[bool, str]:
+        if key.startswith("egg:"):
+            tier = key.split(":", 1)[1]
+            return self.buy_egg(None if tier in ("plain", "none", "") else tier)
+        item = ITEMS.get(key)
+        if item is None:
+            return False, f"unknown item {key!r}"
+        if item["passive"] and self.item_count(key) > 0:
+            return False, f"{item['label']} is already owned (one-time purchase)"
+        if self.wallet < item["price"]:
+            return False, f"not enough tokens: need {item['price']:,}, have {self.wallet:,}"
+        self.state.spent_tokens += item["price"]
+        self.state.inventory[key] = self.item_count(key) + 1
+        self._emit("buy", item=key)
+        self.save()
+        return True, f"bought {item['label']}"
+
+    def buy_egg(self, tier: str | None) -> tuple[bool, str]:
+        if tier is not None and tier not in ("uncommon", "rare"):
+            return False, "egg tiers: plain, uncommon, rare"
+        price = egg_price(tier)
+        if self.wallet < price:
+            return False, f"not enough tokens: need {price:,}, have {self.wallet:,}"
+        s = self.state
+        self.state.spent_tokens += price
+        released = None
+        if s.active is not None:
+            a = s.active
+            reached = a.path_ids[: max(1, a.stage_index + 1)] or [a.base_id]
+            released = self.display_name()
+            s.dex.append(DexEntry(id=str(uuid.uuid4()), base_id=a.base_id, final_id=reached[-1],
+                                  chain_order=list(reached), rarity=a.rarity, caught_at=_now_iso(),
+                                  is_shiny=a.is_shiny, nature=a.nature,
+                                  names={sid: dict(self.line.names[sid]) for sid in reached if sid in self.line.names}
+                                  if self.line else None, released_at=_now_iso()))
+            s.active = None
+            self.line = None
+        s.egg_usage = 0
+        s.egg_tier = tier
+        s.pending_hatch_id = None
+        self._emit("egg", tier=tier or "plain", released=released)
+        self.save()
+        self.ensure_egg_prefetch()
+        return True, f"new {tier or 'plain'} egg" + (f" — {released} was released" if released else "")
+
+    # ----------------------------------------------------------------- bag
+    def use_rare_candy(self) -> tuple[bool, str]:
+        if self.state.active is None:
+            return False, "no Pokémon to feed (egg)"
+        if self.item_count("rareCandy") <= 0:
+            return False, "no Rare Candy in the bag"
+        if self.ensure_line() is None:
+            return False, "evolution line unavailable (offline?), try again later"
+        before = (self.state.active.current_id, self.state.active.stage_index)
+        self.state.inventory["rareCandy"] -= 1
+        self.apply_usage(RARE_CANDY_XP)       # growth only; never counts as real usage
+        a = self.state.active
+        if a is None:
+            return True, "graduated!"
+        if (a.current_id, a.stage_index) != before:
+            return True, f"evolved into {self.display_name()}"
+        return True, f"+{RARE_CANDY_XP // 1_000_000}M growth ({self.tokens_to_next:,} to next)"
+
+    def use_mint(self) -> tuple[bool, str]:
+        a = self.state.active
+        if a is None:
+            return False, "no Pokémon (egg)"
+        if self.item_count("mint") <= 0:
+            return False, "no Mint in the bag"
+        self.state.inventory["mint"] -= 1
+        choices = [n for n in NATURES if n != a.nature]
+        a.nature = self.rng.choice(choices)
+        self._emit("mint", nature=a.nature)
+        self.save()
+        return True, f"nature is now {a.nature.title()}"
