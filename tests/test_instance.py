@@ -36,6 +36,15 @@ class InstanceTests(unittest.TestCase):
         instance.pid_file(self.dir).write_text("garbage")
         self.assertIsNone(instance.running_pid(self.dir))
 
+    def test_pid_reuse_guard(self):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        try:
+            instance.pid_file(self.dir).write_text(str(p.pid))     # alive, but not poketoken
+            if Path("/proc").exists():
+                self.assertIsNone(instance.running_pid(self.dir))
+        finally:
+            p.kill(); p.wait()
+
     def test_commands(self):
         self.assertFalse(instance.send(self.dir, "quit"))             # nobody running
         self.assertIsNone(instance.take_command(self.dir))

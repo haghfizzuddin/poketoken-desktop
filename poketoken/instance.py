@@ -50,6 +50,17 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def _is_poketoken(pid: int) -> bool:
+    """Guard against pid reuse: on Linux confirm the process really is poketoken (or us)."""
+    if pid == os.getpid():
+        return True
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return True                                    # no /proc (Windows, macOS): trust the pid
+    return b"poketoken" in cmdline
+
+
 def running_pid(state_dir: Path) -> int | None:
     """Pid of the live window, or None (a stale pid file is removed)."""
     f = pid_file(state_dir)
@@ -57,7 +68,7 @@ def running_pid(state_dir: Path) -> int | None:
         pid = int(f.read_text().strip())
     except (OSError, ValueError):
         return None
-    if pid_alive(pid):
+    if pid_alive(pid) and _is_poketoken(pid):
         return pid
     try:
         f.unlink()

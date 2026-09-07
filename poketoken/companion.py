@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 import os
 import random
+import statistics
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -37,6 +38,13 @@ FRESH_EGG_PRICE = 1_000_000_000
 SHINY_DENOMINATOR = 64
 SHINY_CHARM_DENOMINATOR = 48
 EGG_TIERS: list[str | None] = [None, "uncommon", "rare"]
+
+# activity history (phase 2): streaks and the weekly goal are computed from this
+HISTORY_DAYS = 120
+STREAK_MIN_TOKENS = 1_000_000          # a day "counts" toward the streak at 1M+ tokens
+WEEKLY_GOAL_MIN = 50_000_000           # the weekly goal never drops below this
+WEEKLY_GOAL_LOOKBACK = 4               # median of up to this many previous complete weeks
+WEEKLY_GOAL_MIN_WEEKS = 2              # ...but needs at least this many to unlock
 
 NATURES = ["hardy", "lonely", "brave", "adamant", "naughty",
            "bold", "docile", "relaxed", "impish", "lax",
@@ -171,6 +179,8 @@ class CompanionState:
     inventory: dict[str, int] = field(default_factory=dict)
     candy_grant_tier: dict[str, int] = field(default_factory=dict)
     candy_feature_seeded: bool = False
+    history: dict[str, dict] = field(default_factory=dict)      # "yyyy-MM-dd" -> usage.day_stats row
+    history_backfilled: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -182,6 +192,7 @@ class CompanionState:
             "collectedFinals": sorted(self.collected_finals), "language": self.language,
             "inventory": self.inventory, "candyGrantTier": self.candy_grant_tier,
             "candyFeatureSeeded": self.candy_feature_seeded,
+            "history": self.history, "historyBackfilled": self.history_backfilled,
         }
 
     @staticmethod
@@ -210,6 +221,9 @@ class CompanionState:
         s.inventory = {str(k): int(v) for k, v in get("inventory", dict, {}).items() if isinstance(v, int)}
         s.candy_grant_tier = {str(k): int(v) for k, v in get("candyGrantTier", dict, {}).items() if isinstance(v, int)}
         s.candy_feature_seeded = get("candyFeatureSeeded", bool, False)
+        s.history = {str(k): dict(v) for k, v in get("history", dict, {}).items()
+                     if isinstance(v, dict) and isinstance(v.get("tokens"), int)}
+        s.history_backfilled = get("historyBackfilled", bool, False)
         return s
 
 
@@ -584,6 +598,59 @@ class Companion:
         if not has_usage_data or today == 0:
             return "sleep"
         return {"idle": "idle", "normal": "working"}.get(burn_tier, "focus")
+
+    # ------------------------------------------------------------- history
+    def record_history(self, day_rows: dict[str, dict], today: str, backfill: bool = False) -> None:
+        """Merge per-day usage rows into the save (rows given win), prune to HISTORY_DAYS."""
+        self.state.history.update({d: dict(r) for d, r in day_rows.items()})
+        cutoff = (date.fromisoformat(today) - timedelta(days=HISTORY_DAYS)).isoformat()
+        self.state.history = {d: r for d, r in self.state.history.items() if d >= cutoff}
+        if backfill:
+            self.state.history_backfilled = True
+        self.save()
+
+    def day_tokens(self, day: str) -> int:
+        return int(self.state.history.get(day, {}).get("tokens", 0))
+
+    def streak(self, today: str) -> tuple[int, str | None, bool]:
+        """(length, first day, today already counts). A streak survives the current day until
+        midnight even if today is still below STREAK_MIN_TOKENS."""
+        d = date.fromisoformat(today)
+        today_counts = self.day_tokens(today) >= STREAK_MIN_TOKENS
+        if not today_counts:
+            d -= timedelta(days=1)
+        length, start = 0, None
+        while self.day_tokens(d.isoformat()) >= STREAK_MIN_TOKENS:
+            length += 1
+            start = d.isoformat()
+            d -= timedelta(days=1)
+        return length, start, today_counts
+
+    @staticmethod
+    def week_key(day: str) -> str:
+        y, w, _ = date.fromisoformat(day).isocalendar()
+        return f"{y}-W{w:02d}"
+
+    def week_totals(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for d, r in self.state.history.items():
+            k = self.week_key(d)
+            out[k] = out.get(k, 0) + int(r.get("tokens", 0))
+        return out
+
+    def weekly_goal(self, today: str) -> dict:
+        """Target = median of the previous complete weeks (up to WEEKLY_GOAL_LOOKBACK), floor
+        WEEKLY_GOAL_MIN; unlocks after WEEKLY_GOAL_MIN_WEEKS of history."""
+        totals = self.week_totals()
+        this_week = self.week_key(today)
+        current = totals.get(this_week, 0)
+        previous = sorted((k for k in totals if k < this_week), reverse=True)[:WEEKLY_GOAL_LOOKBACK]
+        if len(previous) < WEEKLY_GOAL_MIN_WEEKS:
+            return {"week": this_week, "current": current, "target": None, "progress": 0.0,
+                    "weeks_needed": WEEKLY_GOAL_MIN_WEEKS - len(previous)}
+        target = max(WEEKLY_GOAL_MIN, int(statistics.median(totals[k] for k in previous)))
+        return {"week": this_week, "current": current, "target": target,
+                "progress": min(1.0, current / target), "weeks_needed": 0}
 
     # ---------------------------------------------------------------- shop
     def shop_entries(self) -> list[dict]:

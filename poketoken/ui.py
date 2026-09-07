@@ -627,6 +627,12 @@ class PokeWindow:
                 rows.append(("5-hour block", f"{fmt.compact(snap.block.total)} · {fmt.cost(snap.block.cost)} · {mins:.0f} min"))
             rows.append(("This week", f"{fmt.compact(snap.week.total)} · {fmt.cost(snap.week.cost)}"))
             rows.append(("This month", f"{fmt.compact(snap.month.total)} · {fmt.cost(snap.month.cost)}"))
+        if snap:
+            n, _, counts = comp.streak(snap.today_date)
+            rows.append(("Streak", f"{n} day{'s' if n != 1 else ''}" + (" · today counts" if counts else " · not yet today") if n else "none yet"))
+            g = comp.weekly_goal(snap.today_date)
+            rows.append(("Weekly goal", f"{fmt.compact(g['current'])} / {fmt.compact(g['target'])} · {fmt.percent(g['progress'] * 100)}"
+                         if g["target"] else f"unlocks in {g['weeks_needed']} week(s)"))
         rows.append(("Wallet", f"{fmt.compact(comp.wallet)} tokens"))
         grads = sum(1 for e in s.dex if not e.is_released)
         rows.append(("Pokédex", f"{grads} graduated · {len({sid for e in s.dex for sid in e.chain_order})} species"))

@@ -34,10 +34,31 @@ class App:
         now = now or datetime.now()
         entries = self.reader.scan(U.scan_start(now))
         snap = U.summarize(entries, now)
+        if not self.companion.state.history_backfilled:
+            # one-time: read every log file ever written so streaks and the weekly goal start
+            # from real history instead of from today
+            all_entries = self.reader.scan(0)
+            self.companion.record_history(U.day_stats(all_entries), snap.today_date, backfill=True)
+            self.log(f"history backfilled: {len(self.companion.state.history)} days from {self.reader.last_scan_files} files")
+        else:
+            self.companion.record_history(U.day_stats(entries), snap.today_date)
         self.companion.update(snap.today_by_provider(), snap.today_date, snap.burn_tier,
                               limit_warning=False, has_usage_data=snap.has_data)
         self.last = snap
         return snap
+
+    def streak_line(self, today: str) -> str:
+        n, start, counts = self.companion.streak(today)
+        if n == 0:
+            return "no streak yet — a day counts at 1M+ tokens"
+        return f"{n}-day streak since {start}" + ("  ✓ today counts" if counts else "  · today not yet counted")
+
+    def goal_line(self, today: str) -> str:
+        g = self.companion.weekly_goal(today)
+        if g["target"] is None:
+            return f"weekly goal unlocks after {g['weeks_needed']} more week(s) of history"
+        return (f"weekly goal {fmt.compact(g['current'])} / {fmt.compact(g['target'])}  "
+                f"{fmt.percent(g['progress'] * 100)}" + ("  ✓ reached" if g["progress"] >= 1 else ""))
 
     # --------------------------------------------------------------- views
     def status_lines(self, snap: U.Snapshot) -> list[str]:
@@ -79,6 +100,8 @@ class App:
                        f"{fmt.compact(int(snap.tokens_per_minute or 0))} tpm ({snap.burn_tier}) · {fmt.cost(snap.block.cost)}")
         out.append(f"Week: {fmt.compact(snap.week.total)} · {fmt.cost(snap.week.cost)}    "
                    f"Month: {fmt.compact(snap.month.total)} · {fmt.cost(snap.month.cost)}")
+        out.append(f"Streak: {self.streak_line(snap.today_date)}")
+        out.append(f"Goal:   {self.goal_line(snap.today_date)}")
         out.append("")
         inv = " ".join(f"{C.ITEMS[k]['emoji']}×{n}" for k, n in s.inventory.items() if n > 0) or "empty"
         grads = sum(1 for e in s.dex if not e.is_released)
@@ -138,6 +161,26 @@ def cmd_refresh(app: App, args) -> int:
     evs = app.companion.drain_events()
     print(f"{snap.today_date} today={snap.today.total:,} state={app.companion.display_state} "
           f"files={app.reader.last_scan_files} events={len(evs)}")
+    return 0
+
+
+def cmd_history(app: App, args) -> int:
+    snap = app.tick()
+    h = app.companion.state.history
+    days = sorted(h)[-args.days:]
+    if not days:
+        print("no history yet")
+        return 0
+    peak = max(h[d]["tokens"] for d in days) or 1
+    print(f"{'date':<11}{'tokens':>8}{'cost':>9}{'cache':>7}{'best 5h':>9}  activity")
+    for d in days:
+        r = h[d]
+        mark = "★" if r["tokens"] >= C.STREAK_MIN_TOKENS else " "
+        print(f"{d:<11}{fmt.compact(r['tokens']):>8}{fmt.cost(r['cost']):>9}{fmt.percent(r.get('cacheRatio', 0) * 100):>7}"
+              f"{fmt.compact(r.get('bestBlock', 0)):>9}  {fmt.bar(r['tokens'] / peak, 24)} {mark}")
+    print(f"\n★ = counts toward the streak (≥ {fmt.compact(C.STREAK_MIN_TOKENS)})")
+    print(app.streak_line(snap.today_date))
+    print(app.goal_line(snap.today_date))
     return 0
 
 
@@ -261,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("-i", "--interval", type=int, default=30)
     sub.add_parser("statusline", help="one compact line for the Claude Code status line")
     sub.add_parser("refresh", help="single refresh tick (for cron/systemd timers)")
+    hi = sub.add_parser("history", help="daily usage table, streak and weekly goal")
+    hi.add_argument("-n", "--days", type=int, default=30)
     sub.add_parser("dex", help="Pokédex / catch log")
     sh = sub.add_parser("shop", help="token shop")
     sh.add_argument("--buy", help="candy | mint | charm | egg | egg-uncommon | egg-rare")
@@ -286,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     app = App(args.state_dir)
     handler = {"status": cmd_status, "watch": cmd_watch, "statusline": cmd_statusline, "refresh": cmd_refresh,
                "dex": cmd_dex, "shop": cmd_shop, "bag": cmd_bag, "pet": cmd_pet, "debug": cmd_debug,
+               "history": cmd_history,
                "app": cmd_app, "window": cmd_app, "ui": cmd_app, "open": cmd_app,
                "close": cmd_close, "toggle": cmd_toggle, None: cmd_status}[args.cmd]
     return handler(app, args)

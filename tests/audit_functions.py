@@ -147,6 +147,8 @@ C.CompanionState.from_dict({"active": {"bogus": 1}, "dex": [{"bad": 1}], "invent
 section("cli commands")
 rich = scratch / "state-rich"
 shutil.copytree(Path.home() / ".local/share/poketoken", rich, dirs_exist_ok=True)
+for junk in ("app.pid", "app.cmd", "app.log"):              # never inherit the user's live window
+    (rich / junk).unlink(missing_ok=True)
 st = json.loads((rich / "state.json").read_text())
 st.update({"usedSinceInstall": 6_200_000_000, "spentTokens": 600_000_000,
            "active": {"baseID": 1, "pathIDs": [1, 2], "plannedPathIDs": [1, 2, 3], "stageIndex": 1,
@@ -158,10 +160,12 @@ st.update({"usedSinceInstall": 6_200_000_000, "spentTokens": 600_000_000,
 (rich / "state.json").write_text(json.dumps(st))
 egg_dir = scratch / "state-egg"
 shutil.copytree(Path.home() / ".local/share/poketoken", egg_dir, dirs_exist_ok=True)
+for junk in ("app.pid", "app.cmd", "app.log"):
+    (egg_dir / junk).unlink(missing_ok=True)
 rich_ui = scratch / "state-rich-ui"                 # untouched copy for the window walkthrough
 shutil.copytree(rich, rich_ui)
 base = ["--state-dir", str(rich)]
-for argv in (["status"], ["statusline"], ["refresh"], ["dex"], ["shop"], ["shop", "--buy", "mint"],
+for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], ["dex"], ["shop"], ["shop", "--buy", "mint"],
              ["shop", "--buy", "egg-rare"], ["bag"], ["bag", "--use", "candy"], ["bag", "--use", "mint"],
              ["bag", "--use", "bogus"], ["debug"], []):
     rc, out = quiet(cli.main, base + argv)

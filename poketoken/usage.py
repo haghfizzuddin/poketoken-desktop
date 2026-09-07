@@ -287,6 +287,37 @@ class Snapshot:
         return {PROVIDER_ID: self.today.total} if self.today.total > 0 else {}
 
 
+def best_block(entries: list[Entry]) -> int:
+    """Largest token total inside any 5-hour window of these entries (two-pointer sweep)."""
+    es = sorted(entries, key=lambda e: e.ts)
+    best = run = 0
+    lo = 0
+    for hi, e in enumerate(es):
+        run += e.total
+        while es[lo].ts < e.ts - BLOCK_WINDOW:
+            run -= es[lo].total
+            lo += 1
+        best = max(best, run)
+    return best
+
+
+def day_stats(entries: list[Entry]) -> dict[str, dict]:
+    """Per local day: tokens, input/output/cache split, cost, best 5h block, cache-read ratio."""
+    by_day: dict[str, list[Entry]] = {}
+    for e in entries:
+        by_day.setdefault(e.local_day, []).append(e)
+    out: dict[str, dict] = {}
+    for day, es in by_day.items():
+        b = Bucket()
+        for e in es:
+            b.add(e)
+        denom = b.input + b.cache_write + b.cache_read
+        out[day] = {"tokens": b.total, "input": b.input, "output": b.output, "cacheWrite": b.cache_write,
+                    "cacheRead": b.cache_read, "cost": round(b.cost, 4), "bestBlock": best_block(es),
+                    "cacheRatio": round(b.cache_read / denom, 4) if denom else 0.0}
+    return out
+
+
 def summarize(entries: list[Entry], now: datetime | None = None) -> Snapshot:
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
