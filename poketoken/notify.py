@@ -8,7 +8,6 @@ The on/off switch lives in `<state_dir>/settings.json` under the key "notificati
 """
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -16,6 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from xml.sax.saxutils import escape
+from . import settings
 
 SETTINGS_FILE = "settings.json"
 LOG_FILE = "notify.log"
@@ -46,24 +46,16 @@ Write-Output 'toast shown'
 
 # ---------------------------------------------------------------- settings
 def settings_path(state_dir: Path | str) -> Path:
-    return Path(state_dir) / SETTINGS_FILE
+    return settings.path(Path(state_dir))
 
 
 def load_settings(state_dir: Path | str) -> dict:
-    """The generic settings dict; empty when the file is missing or unreadable."""
-    try:
-        data = json.loads(settings_path(state_dir).read_text("utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    """The shared settings dict (see settings.py); empty when missing or unreadable."""
+    return settings.load(Path(state_dir))
 
 
-def save_settings(state_dir: Path | str, settings: dict) -> None:
-    p = settings_path(state_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(settings, ensure_ascii=False, indent=1), "utf-8")
-    os.replace(tmp, p)
+def save_settings(state_dir: Path | str, data: dict) -> None:
+    settings.save(Path(state_dir), data)
 
 
 def enabled(state_dir: Path | str) -> bool:
@@ -71,9 +63,7 @@ def enabled(state_dir: Path | str) -> bool:
 
 
 def set_enabled(state_dir: Path | str, on: bool) -> None:
-    s = load_settings(state_dir)
-    s["notifications"] = bool(on)
-    save_settings(state_dir, s)
+    settings.set(Path(state_dir), "notifications", bool(on))
 
 
 # ---------------------------------------------------------------- backends

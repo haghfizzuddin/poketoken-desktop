@@ -179,7 +179,7 @@ if len(launched) != 7:
 section("cli commands")
 rich = scratch / "state-rich"
 shutil.copytree(Path.home() / ".local/share/poketoken", rich, dirs_exist_ok=True)
-for junk in ("app.pid", "app.cmd", "app.log"):              # never inherit the user's live window
+for junk in ("app.pid", "app.cmd", "app.log", "ui.json", "settings.json"):   # never inherit live window prefs              # never inherit the user's live window
     (rich / junk).unlink(missing_ok=True)
 st = json.loads((rich / "state.json").read_text())
 st.update({"usedSinceInstall": 6_200_000_000, "spentTokens": 600_000_000,
@@ -192,15 +192,23 @@ st.update({"usedSinceInstall": 6_200_000_000, "spentTokens": 600_000_000,
 (rich / "state.json").write_text(json.dumps(st))
 egg_dir = scratch / "state-egg"
 shutil.copytree(Path.home() / ".local/share/poketoken", egg_dir, dirs_exist_ok=True)
-for junk in ("app.pid", "app.cmd", "app.log"):
+for junk in ("app.pid", "app.cmd", "app.log", "ui.json", "settings.json"):   # never inherit live window prefs
     (egg_dir / junk).unlink(missing_ok=True)
 rich_ui = scratch / "state-rich-ui"                 # untouched copy for the window walkthrough
 shutil.copytree(rich, rich_ui)
 base = ["--state-dir", str(rich)]
-for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], ["stats"], ["dex"], ["shop"], ["shop", "--buy", "mint"],
+card_file = scratch / "card.txt"
+for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], ["stats"], ["dex"], ["shop"],
+             ["card", "--trainer", "Audit"], ["card", "--json"], ["shop", "--buy", "mint"],
              ["shop", "--buy", "egg-rare"], ["bag"], ["bag", "--use", "candy"], ["bag", "--use", "mint"],
              ["bag", "--use", "bogus"], ["debug"], []):
     rc, out = quiet(cli.main, base + argv)
+    if argv[:1] == ["card"] and "--json" not in argv:
+        token = next((ln for ln in out.splitlines() if ln.startswith("PT1.")), "")
+        card_file.write_text(token)
+        for bargs in (["battle", token, "--log", "3"], ["battle", str(card_file), token], ["battle", "not-a-card"]):
+            brc, bout = quiet(cli.main, base + bargs)
+            print(f" battle {bargs[1][:12]:<14}       rc={brc} {bout.strip().splitlines()[-1][:60] if bout.strip() else ''}")
     flag = "" if rc in (0, 1, None) else "  <-- unexpected rc"
     print(f" {' '.join(argv) or '(default)':<22} rc={rc} {out.strip().splitlines()[0][:70] if out.strip() else ''}{flag}")
     if flag:
@@ -211,7 +219,7 @@ for argv in (["notify"], ["notify", "status"], ["notify", "off"], ["notify", "on
     if rc != 0:
         problems.append(f"cli {' '.join(argv)} rc={rc}")
 # empty-dex / empty-bag paths
-for argv in (["dex"], ["bag"], ["stats"]):
+for argv in (["dex"], ["bag"], ["stats"], ["card"], ["battle", str(card_file)]):
     rc, out = quiet(cli.main, ["--state-dir", str(egg_dir)] + argv)
     print(f" egg-state {argv[0]:<12} rc={rc} {out.strip()[:60]}")
 # watch: one iteration then Ctrl-C
@@ -313,6 +321,7 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win.render(); grab(win, "win-rich-detail")
         win.open_detail(2); win.root.update(); win.close_detail()
         win.set_sprite_scale(2); win.set_sprite_scale(3); win.root.update()
+        win.toggle_compact(); win.set_sprite_scale(2); win.set_sprite_scale(3); win.toggle_compact()   # compact resizes to default_geometry
         win.toggle_dark(); win.set_tab("home"); grab(win, "win-rich-dark"); win.toggle_dark()
         win.toggle_compact(); win.root.update(); win._show_menu(Ev(x_root=50, y_root=50)); win.menu.unpost()
         grab(win, "win-rich-compact"); win.toggle_compact()

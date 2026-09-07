@@ -31,6 +31,20 @@ evolve it through its real evolution line, graduate it into your Pokédex, start
 4. **Graduate.** Final form + threshold archives it in the Pokédex and a fresh egg arrives.
 5. **Shop & Bag.** Tokens you have used are your currency: Rare Candy (+100M growth), a Mint
    (re-roll nature), a Shiny Charm (1/64 → 1/48), or a new egg — plain, Uncommon+ or Rare+.
+6. **Streaks and the weekly goal earn Rare Candy.** A day counts at 1M+ tokens. Streak
+   milestones of 3 / 7 / 14 / 30 days pay 1 / 2 / 3 / 5 candies (then 5 per further 30 days);
+   beating your weekly goal — the median of your previous weeks, floor 50M — pays 5. This
+   replaces upstream's rate-limit grants and rewards showing up, not burning.
+7. **Stats, IVs and luck.** Every hatch rolls six hidden IVs (0–31). Consistency and efficiency
+   during incubation add best-of bonus rolls: a 7- and 14-day streak, a 7-day cache-read ratio
+   of 70 % and 90 %. A 7-day streak also cuts the shiny denominator by a quarter. Rarity odds
+   are never touched, so raw volume buys nothing. Level 5→100 follows growth toward
+   graduation and stats use the games' formula with the nature's ±10 %.
+8. **Ditto.** 1 in 128 common multi-stage hatches is a Ditto in disguise; it drops the act at
+   the first evolution threshold. Its shininess stays hidden until then.
+9. **Battle cards.** `poketoken card` prints a short `PT1.…` token; a colleague runs
+   `poketoken battle <token>` and both of you get the same deterministic fight — real type
+   matchups, STAB, physical or special by the better stat. Trust-based and for fun.
 
 Only tokens used *after* install count. Progress lives in a JSON save on disk, so closing the
 window, shutting down WSL or rebooting loses nothing.
@@ -68,12 +82,19 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 | `poketoken statusline` | one compact line for the Claude Code status line |
 | `poketoken refresh` | a single refresh tick (cron / systemd timers) |
 | `poketoken dex` · `shop` · `bag` | Pokédex, token shop (`--buy candy\|mint\|charm\|egg\|egg-uncommon\|egg-rare`), inventory (`--use candy\|mint`) |
+| `poketoken stats` | level, types, abilities, the six stats with IVs, and the luck behind them |
+| `poketoken history -n 30` | daily usage table with the streak marker, streak and weekly goal |
+| `poketoken card [--trainer NAME]` | your battle card as a shareable token (`--json` for the raw card) |
+| `poketoken battle <card> [other]` | fight your Pokémon against a card, or spectate two cards |
 | `poketoken notify on\|off\|test\|status` | desktop notifications for hatch / evolve / graduate / candy / egg |
 | `poketoken debug` | scan roots, timings, raw save |
 
 Window flags: `--dark` / `--light`, `--compact`, `-i SECONDS` (refresh, default 30).
-Keys: `Esc` / `Ctrl-W` close, `Ctrl-R` refresh, right-click or `⋯` for the menu. Shop and Bag
-buttons arm on the first click and fire on the second, so a stray click never spends tokens.
+Keys: `Esc` / `Ctrl-W` close, `Ctrl-R` refresh, right-click or `⋯` for the menu (appearance,
+compact view, sprite size 2×/3×/4×, notifications). Shop and Bag buttons arm on the first click
+and fire on the second, so a stray click never spends tokens. Click the companion on Home or any
+Pokédex cell to open its detail page: big sprite, evolution line, stats card, records. Future
+forms in the evolution line are shown blurred and sharpen as you approach the threshold.
 
 ### Claude Code status line
 
@@ -88,7 +109,7 @@ Every call is also a refresh tick, so the game advances even with the window clo
 
 | path | what |
 |---|---|
-| `state.json` | the save — upstream's field names (`usedSinceInstall`, `eggUsage`, `active`, `dex`, …) |
+| `state.json` | the save — upstream's field names (`usedSinceInstall`, `eggUsage`, `active`, `dex`, …) plus `history` (120 days of daily usage) |
 | `events.log` | hatch / evolve / graduate / shop events and errors |
 | `sprites/`, `cache/` | PokéAPI sprites and responses (species and lines forever, base index 30 days) |
 | `ui.json`, `app.pid`, `app.log` | window size/appearance, running-instance pid, background log |
@@ -122,9 +143,9 @@ the backend. Output of the backend lands in `notify.log`.
 
 ## Not ported (yet)
 
-Official 5-hour / weekly limit gauges and the Rare Candy grants they trigger (needs the
-claude.ai limits API with your OAuth token), the other 11 CLI providers, the Ditto disguise,
-save transfer. The save uses upstream's field names but is not
+Official 5-hour / weekly limit gauges (needs the claude.ai limits API with your OAuth token;
+the Rare Candy grants they used to trigger come from streaks and the weekly goal instead),
+the other 11 CLI providers, save transfer, UI translations. The save uses upstream's field names but is not
 byte-compatible with the macOS app's Codable output.
 
 ## Development
