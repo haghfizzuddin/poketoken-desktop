@@ -1682,9 +1682,20 @@ class PokeWindow:
         is_buddy = comp.state.representative_species_id == sid
         is_fighter = BU.fighter_sid(comp, self.app.dir) == sid
         can_raise, why = comp.can_raise(sid)
-        acts = [("buddy:toggle", "Unpin" if is_buddy else "Pin as buddy", "tinted" if is_buddy else "filled",
-                 (lambda t=sid, on=not is_buddy: self._set_buddy(t if on else None)),
-                 "Go back to showing the Pokémon you are raising" if is_buddy else "Show this Pokémon on the home card"),
+        a = comp.state.active
+        own_line = a is not None and sid in a.path_ids[: a.stage_index + 1]
+        if own_line:
+            # pinning your own companion is a no-op: the card follows it anyway, and through its
+            # evolutions. Saying so beats a button that appears to do nothing.
+            buddy_act = ("buddy:toggle", "Following", "disabled", (lambda: None),
+                         "The home card already follows the Pokémon you are raising")
+        else:
+            buddy_act = ("buddy:toggle", "Unpin" if is_buddy else "Pin as buddy",
+                         "tinted" if is_buddy else "filled",
+                         (lambda t=sid, on=not is_buddy: self._set_buddy(t if on else None)),
+                         "Go back to showing the Pokémon you are raising" if is_buddy
+                         else "Show this Pokémon on the home card instead of the one you are raising")
+        acts = [buddy_act,
                 ("fighter:toggle", "Fighting" if is_fighter else "Use in battle",
                  "tinted" if is_fighter else "filled",
                  (lambda t=sid, on=not is_fighter: self._set_fighter(t if on else None)),
