@@ -209,6 +209,8 @@ class PokeWindow:
         self.bp = "sm"                              # its breakpoint: xs | sm | md | lg
         self.show_details = False                   # Home telemetry disclosure on narrow viewports
         self._tips: dict[str, str] = {}             # tooltip text by canvas tag
+        self._natural: dict[str, tuple[int, int]] = {}   # visible size of a sprite file, cached
+        self.sprite_art_pad = SPRITE_PAD            # breathing room around the art in its box
         self.settled_geometry: str | None = None   # set from <Configure>, i.e. after the WM applied it
         self.poll_job = self.periodic_job = None
         self.refresh_again = False
@@ -763,8 +765,8 @@ class PokeWindow:
         self.sync_right = cx - r - (10 if self.narrow else 14)
         self.sync_cy = cy
         self._draw_sync(w)
-        y = brand_bottom + (8 if self.narrow else 10)
-        return self.draw_tabs(y, w) + (8 if self.narrow else 10)
+        y = brand_bottom + (6 if self.narrow else 10)
+        return self.draw_tabs(y, w) + (6 if self.narrow else 10)
 
     def draw_tabs(self, y, w) -> int:
         """The five destinations stay directly reachable at every width (§3); only the height and
@@ -772,7 +774,7 @@ class PokeWindow:
         pad = 12 if self.narrow else 16
         segw = min(w - 2 * pad, 640)
         x = (w - segw) / 2
-        h = 38 if is_touch(w) else 32
+        h = (34 if self.narrow else 38) if is_touch(w) else 32
         self.rrect(x, y, x + segw, y + h, RADIUS["control"], fill="seg")
         n = len(TABS)
         each = (segw - 4) / n
@@ -939,17 +941,45 @@ class PokeWindow:
         remaining = f"{fmt.compact(comp.tokens_to_next)} to " + ("graduate" if comp.is_final_stage else "evolve")
         return self.draw_evo_line(y, x0, cw, items, lambda cid: comp.line.name(cid, s.language), accent,
                                   clickable=False, progress=comp.progress, remaining=remaining)
+    def _natural_size(self, path) -> tuple[int, int]:
+        """The visible (cropped) size of a sprite file, cached. Pixel art is only ever scaled by
+        whole numbers, so the box has to be chosen from this or the art sits marooned in padding."""
+        if not path:
+            return (48, 48)
+        key = str(path)
+        if key not in self._natural:
+            try:
+                im = Image.open(path)
+                box = union_bbox([f.convert("RGBA") for f in ImageSequence.Iterator(im)])
+            except (OSError, ValueError):
+                box = None
+            self._natural[key] = (box[2] - box[0], box[3] - box[1]) if box else (48, 48)
+        return self._natural[key]
+
+    def _hero_path(self):
+        s = self.app.companion.state
+        paths = (self.payload or {}).get("paths", {})
+        if s.active is None:
+            return paths.get("egg")
+        return (paths.get(("anim", s.active.current_id, s.active.shiny_visible))
+                or paths.get(("static", s.active.current_id, s.active.shiny_visible)))
+
     def _hero_chrome(self) -> float:
         """The hero card's height without the sprite: name, pills, the progress rows, padding."""
-        return (self.pad - 4) + 2 + self.F["title"].metrics("linespace") + 10 + 30 + 18 + 14 + 20
+        tight = self.narrow
+        return ((self.pad - 4) + 2 + self.F["title"].metrics("linespace") + (6 if tight else 10)
+                + (26 if tight else 30) + (16 if tight else 18) + (12 if tight else 14) + (16 if tight else 20))
 
     def _hero_sprite(self, cw) -> int:
-        """The sprite fills the space the card can spare. On a narrow screen that means the
-        companion, its evolution, rewards and today's usage all fit the first screen: the sprite
-        gives up height to them rather than pushing them below the fold (§4)."""
+        """The sprite fills the space the card can spare, and the box hugs the art: the size is
+        the art's own size times the largest whole number that fits, plus a little padding. On a
+        narrow screen the budget is what is left once the evolution track, rewards and today's
+        usage have their room, so all four share the first screen (§4, §11)."""
         pad = self.pad
+        art_pad = self.sprite_art_pad = 4 if self.narrow else SPRITE_PAD
+        nat = max(self._natural_size(self._hero_path()))
         cap = 200 if self.narrow else self.sprite_box
-        size = max(120, min(self.sprite_box, cap, int(cw - 2 * pad)))
+        size = max(96, min(self.sprite_box, cap, int(cw - 2 * pad)))
         if not self.narrow:
             return int(size)
         comp = self.app.companion
@@ -960,9 +990,11 @@ class PokeWindow:
         others = self._rewards_height() + self._today_height() + 3 * self.stack_gap
         if comp.state.active and comp.line:
             others += L.evo_rows(pad, self.F["captionB"].metrics("linespace"),
-                                 SPRITE["card"] + 8, True)["height"]
-        budget = vh - getattr(self, "content_top", 90) - 28 - others - self._hero_chrome()
-        return int(max(96, min(size, budget)))
+                                 SPRITE["card"] + 8, True, tight=True)["height"]
+        budget = vh - getattr(self, "content_top", 90) - self._footer_h() - others - self._hero_chrome()
+        room = max(nat, min(size, budget) - 2 * art_pad)      # art space the card can spare
+        scale = max(1, int(room // nat))
+        return int(nat * scale + 2 * art_pad)
 
     def draw_hero(self, y, x0, cw) -> int:
         """The companion: the largest thing on the page at every width. The sprite container is
@@ -992,7 +1024,7 @@ class PokeWindow:
             self.text(x0 + cw / 2 + tw / 2, cy + 3, "✦", "title2", "yellow", anchor="ne")
         else:
             self.text(x0 + cw / 2, cy, name, name_font, "label", anchor="n")
-        cy += self.F[name_font].metrics("linespace") + 10
+        cy += self.F[name_font].metrics("linespace") + (6 if self.narrow else 10)
         pills = []
         if s.active:
             a = s.active
@@ -1004,7 +1036,7 @@ class PokeWindow:
         px = x0 + cw / 2 - total / 2
         for t, colr in pills:
             px += self.pill(px, cy, t, colr) + 6
-        cy += 30
+        cy += 26 if self.narrow else 30
         if s.active:
             left = f"Stage {s.active.stage_index + 1} of {s.active.total_forms}"
             frac = comp.progress
@@ -1015,9 +1047,9 @@ class PokeWindow:
             used, goal = s.egg_usage, C.EGG_HATCH_THRESHOLD
         self.text(x0 + pad, cy, left, "captionB", "secondary")
         self.text(x0 + cw - pad, cy, fmt.percent(frac * 100), "captionB", accent, anchor="ne")
-        cy += 18
+        cy += 16 if self.narrow else 18
         self.capsule(x0 + pad, cy, cw - 2 * pad, 8, frac, accent)
-        cy += 14
+        cy += 12 if self.narrow else 14
         self.text(x0 + pad, cy, f"{fmt.compact(used)} / {fmt.compact(goal)}", "caption", "tertiary")
         # the remainder belongs to the evolution card; an egg has none, so it says it here
         if s.active is None:
@@ -1025,7 +1057,7 @@ class PokeWindow:
         if not s.install_baseline_set:
             cy += 16
             self.text(x0 + pad, cy, "waiting for the first usage reading", "caption", "tertiary")
-        cy += 20
+        cy += 16 if self.narrow else 20
         self.fit_card(card, x0, y, cw, cy - y)
         return cy
     def draw_today(self, y, x0, cw) -> int:
@@ -1131,7 +1163,7 @@ class PokeWindow:
         return 8 if self.narrow else GAP
 
     def _reward_row_h(self) -> int:
-        return 40 if self.narrow else 44
+        return 36 if self.narrow else 44
 
     def _rewards_height(self) -> int:
         """Kept beside draw_rewards so the hero can budget for it before either is drawn."""
@@ -1399,7 +1431,7 @@ class PokeWindow:
         sprite = SPRITE["line"] if not self.narrow else SPRITE["card"] + 8
         has_track = progress is not None
         # measured, not guessed: the row sits below the label, so the highlight cannot cover it
-        m = L.evo_rows(pad, self.F["captionB"].metrics("linespace"), sprite, has_track)
+        m = L.evo_rows(pad, self.F["captionB"].metrics("linespace"), sprite, has_track, tight=self.narrow)
         h = m["height"]
         self.card(x0, y, cw, h)
         self.text(x0 + pad, y + m["label_top"], "EVOLUTION", "captionB", "secondary")
@@ -2252,11 +2284,14 @@ class PokeWindow:
         self.c.bind("<Button-3>", self._show_menu)
         return y + 20
 
+    def _footer_h(self) -> int:
+        return 22 if self.narrow else 28
+
     def draw_footer(self, y, x0, cw) -> int:
         """Product status only. Build details live in the ⋯ menu under About (§16)."""
-        self.text(x0 + cw / 2, y + 6, f"auto-refresh every {self.interval} s", "caption", "tertiary", anchor="n")
+        self.text(x0 + cw / 2, y + 4, f"auto-refresh every {self.interval} s", "caption", "tertiary", anchor="n")
         self.c.bind("<Button-3>", self._show_menu)
-        return y + 28
+        return y + self._footer_h()
     # ------------------------------------------------------------- animation
     def _start_sprite_animation(self) -> None:
         if self.sprite_item is None:
@@ -2306,7 +2341,7 @@ class PokeWindow:
         if bbox is None:
             return
         w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        target = box // 2 if self.sprite_subject[0] == "egg" else box - 2 * SPRITE_PAD
+        target = box // 2 if self.sprite_subject[0] == "egg" else box - 2 * self.sprite_art_pad
         scale = fit_scale(w, h, target)
         for fr, dur in raw:
             crop = fr.crop(bbox)

@@ -73,18 +73,18 @@ def masonry(heights: list[float], cols: int, pinned: dict[int, int] | None = Non
 
 
 def evo_rows(pad: float, label_h: float, sprite: float, has_track: bool,
-             gap: float = 8.0, lift: float = 6.0) -> dict:
+             gap: float = 8.0, lift: float = 6.0, tight: bool = False) -> dict:
     """Vertical geometry of the evolution row, relative to the card's top edge. Everything is
     derived from the measured label height so the highlight behind the current form can never
     start above the label's baseline box and paint over it."""
     label_top = pad - 4
     label_bottom = label_top + label_h
-    row_top = label_bottom + gap                 # sprites start here
+    row_top = label_bottom + (gap - 2 if tight else gap)   # sprites start here
     highlight_top = row_top - lift               # the highlight is lifted, but never past the label
-    name_top = row_top + sprite + 4              # the species name under the sprite
-    row_bottom = name_top + 18
+    name_top = row_top + sprite + (2 if tight else 4)      # the species name under the sprite
+    row_bottom = name_top + (16 if tight else 18)
     track_top = row_bottom + 6 if has_track else None
-    height = (row_bottom + (30 if has_track else 0)) + pad - 6
+    height = (row_bottom + ((26 if tight else 30) if has_track else 0)) + pad - 6
     return {"label_top": label_top, "label_bottom": label_bottom, "row_top": row_top,
             "highlight_top": highlight_top, "highlight_bottom": row_bottom - 2,
             "name_top": name_top, "row_bottom": row_bottom, "track_top": track_top, "height": height}
