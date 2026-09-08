@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased
+## v0.3.1 — 2026-09-09
+
+### Fixed
+- **The window comes back when the display dies under it.** On WSL, WSLg's X server can crash
+  when the session reconnects after a screen lock; Xlib then exits the Tk process on the spot and
+  the window was simply gone. The background launcher (`poketoken app`, `toggle`, the Windows
+  shortcut) now runs a small supervisor that owns the pid file, runs the window as a child, and
+  when the child dies waits for the display to answer again before opening it anew. A clean
+  close, or `poketoken close` while it is waiting, ends it; five quick deaths in a row make it
+  give up and log why. Launching while the display is already hung now names the cause and the
+  fix (`wsl --shutdown`) instead of "no window appeared".
+- Species page: the whole evolution line, not just the forms on the record. A caught Quagsire
+  shows Wooper before it; a caught Clamperl shows a pixelated preview of what it can still
+  become. Forms up to the deepest one you own are sharp and named, the rest are pixelated
+  previews with no name (one branch is drawn where a line forks, the one you own if any).
+- Species page: the caption no longer trails off at "19.5…" on a narrow card; it wraps its size
+  onto a second line.
+- Battle record: each row now says who beat whom — "Quagsire beat Nidorino · 2 turns" — instead
+  of an opponent and a trainer name, which told you nothing when every fight was against
+  yourself. The challenger's trainer is named only when it is someone else.
+- Species page: the disabled raise button says what it is for — "Raise · 783.2M short" — rather
+  than a bare shortfall.
+
+### Interface
+- Home no longer shows the same stage progress twice. The companion card is identity and state:
+  name, rarity, a "Stage 2 of 2" pill and its mood. The evolution card owns the progress — the
+  track, the percentage, and now the "61.8M / 500M" figure beside what is left. An egg, which
+  has no evolution card, keeps its hatch bar on the companion card.
+
+## v0.3.0 — 2026-09-08
 
 ### Interface
 - A responsive layout system: four breakpoints, one centred content frame capped at 1240 px, and
@@ -19,10 +48,6 @@
 - Sprites follow fixed tiers (hero, battle, dex, card, micro) and stay whole-number scaled.
 - Keyboard navigation, tooltips on icon-only controls, and no horizontal overflow at 360 px.
 - The footer no longer carries build information; it moved to About in the menu.
-- Home no longer shows the same stage progress twice. The companion card is identity and state:
-  name, rarity, a "Stage 2 of 2" pill and its mood. The evolution card owns the progress — the
-  track, the percentage, and now the "61.8M / 500M" figure beside what is left. An egg, which
-  has no evolution card, keeps its hatch bar on the companion card.
 
 ### Added
 - **Raise a caught Pokémon.** A caught or released Pokémon can be taken out of the Pokédex and
@@ -56,25 +81,6 @@
   Pokédex is dropped automatically.
 
 ### Fixed
-- **The window comes back when the display dies under it.** On WSL, WSLg's X server can crash
-  when the session reconnects after a screen lock; Xlib then exits the Tk process on the spot and
-  the window was simply gone. The background launcher (`poketoken app`, `toggle`, the Windows
-  shortcut) now runs a small supervisor that owns the pid file, runs the window as a child, and
-  when the child dies waits for the display to answer again before opening it anew. A clean
-  close, or `poketoken close` while it is waiting, ends it; five quick deaths in a row make it
-  give up and log why. Launching while the display is already hung now names the cause and the
-  fix (`wsl --shutdown`) instead of "no window appeared".
-- Species page: the whole evolution line, not just the forms on the record. A caught Quagsire
-  shows Wooper before it; a caught Clamperl shows a pixelated preview of what it can still
-  become. Forms up to the deepest one you own are sharp and named, the rest are pixelated
-  previews with no name (one branch is drawn where a line forks, the one you own if any).
-- Species page: the caption no longer trails off at "19.5…" on a narrow card; it wraps its size
-  onto a second line.
-- Battle record: each row now says who beat whom — "Quagsire beat Nidorino · 2 turns" — instead
-  of an opponent and a trainer name, which told you nothing when every fight was against
-  yourself. The challenger's trainer is named only when it is someone else.
-- Species page: the disabled raise button says what it is for — "Raise · 783.2M short" — rather
-  than a bare shortfall.
 - On a narrow window the companion, its evolution, rewards and today's usage now share the first
   screen: the hero sprite is sized from the height left over after the other cards, between a
   96 px floor and the size chosen in the menu.
