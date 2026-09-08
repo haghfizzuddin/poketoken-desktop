@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from .pokeapi import EvoLine, EvoNode, PokeAPI, PokeAPIError, rarity_rank, rarity_includes
+from .pokeapi import EvoLine, EvoNode, PokeAPI, PokeAPIError, rarity_from, rarity_rank, rarity_includes
 
 # ------------------------------------------------------------------ balance (PokemonBalance & friends)
 EGG_HATCH_THRESHOLD = 5_000_000
@@ -121,9 +121,33 @@ def nature_mod(key: str, nature: str | None) -> int:
     return 1 if key == up else -1 if key == down else 0
 
 
+# wild encounters (phase 3): a second way into the Pokédex, earned by consistency
+ENCOUNTER_TTL_DAYS = 2                 # a wild Pokémon waits until the end of the next day
+ENCOUNTER_BEST_BLOCK_MIN = 5_000_000   # a personal-best 5h block only counts from here
+ENCOUNTER_LOG = 40                     # encounters kept in the save
+FLEE_CHANCE = 0.30                     # after a failed throw
+BALLS = {
+    "pokeBall":  {"label": "Poké Ball",  "price": 50_000_000,  "mult": 1.0, "sprite": "poke-ball"},
+    "greatBall": {"label": "Great Ball", "price": 150_000_000, "mult": 1.5, "sprite": "great-ball"},
+    "ultraBall": {"label": "Ultra Ball", "price": 400_000_000, "mult": 2.0, "sprite": "ultra-ball"},
+}
+
+
+def catch_chance(capture_rate: int, ball: str) -> float:
+    """The species' real capture rate (3..255) scaled by the ball, clamped to 5%..95%."""
+    mult = BALLS.get(ball, BALLS["pokeBall"])["mult"]
+    return max(0.05, min(0.95, capture_rate / 255 * mult))
+
+
 ITEMS = {
     "rareCandy":  {"label": "Rare Candy",  "emoji": "🍬", "price": RARE_CANDY_PRICE,  "passive": False,
                    "blurb": f"+{RARE_CANDY_XP // 1_000_000}M growth for your Pokémon"},
+    "pokeBall":   {"label": "Poké Ball",   "emoji": "⚪", "price": BALLS["pokeBall"]["price"],  "passive": False,
+                   "blurb": "throw at a wild Pokémon"},
+    "greatBall":  {"label": "Great Ball",  "emoji": "🔵", "price": BALLS["greatBall"]["price"], "passive": False,
+                   "blurb": "1.5× catch chance"},
+    "ultraBall":  {"label": "Ultra Ball",  "emoji": "⚫", "price": BALLS["ultraBall"]["price"], "passive": False,
+                   "blurb": "2× catch chance"},
     "mint":       {"label": "Mint",        "emoji": "🌿", "price": MINT_PRICE,        "passive": False,
                    "blurb": "re-roll your Pokémon's nature"},
     "shinyCharm": {"label": "Shiny Charm", "emoji": "✨", "price": SHINY_CHARM_PRICE, "passive": True,
@@ -226,10 +250,15 @@ class DexEntry:
     names: dict[int, dict[str, str]] | None = None
     released_at: str | None = None
     ivs: dict[str, int] | None = None
+    source: str = "graduated"          # graduated | released | wild
 
     @property
     def is_released(self) -> bool:
         return self.released_at is not None
+
+    @property
+    def is_wild(self) -> bool:
+        return self.source == "wild"
 
     def name(self, sid: int, lang: str = "en") -> str:
         by = (self.names or {}).get(sid, {})
@@ -239,7 +268,7 @@ class DexEntry:
         return {"id": self.id, "baseID": self.base_id, "finalID": self.final_id, "chainOrder": self.chain_order,
                 "rarity": self.rarity, "caughtAt": self.caught_at, "isShiny": self.is_shiny, "nature": self.nature,
                 "names": {str(k): v for k, v in self.names.items()} if self.names else None,
-                "releasedAt": self.released_at, "ivs": self.ivs}
+                "releasedAt": self.released_at, "ivs": self.ivs, "source": self.source}
 
     @staticmethod
     def from_dict(d) -> "DexEntry | None":
@@ -252,7 +281,9 @@ class DexEntry:
             return DexEntry(str(d.get("id") or uuid.uuid4()), int(d["baseID"]), int(d["finalID"]),
                             [int(x) for x in d["chainOrder"]], d["rarity"] if d.get("rarity") in GRADUATION_TOTAL else "common",
                             d.get("caughtAt"), bool(d.get("isShiny", False)),
-                            d.get("nature") if d.get("nature") in NATURES else None, parsed, d.get("releasedAt"), ivs)
+                            d.get("nature") if d.get("nature") in NATURES else None, parsed, d.get("releasedAt"), ivs,
+                            d.get("source") if d.get("source") in ("graduated", "released", "wild") else
+                            ("released" if d.get("releasedAt") else "graduated"))
         except (KeyError, TypeError, ValueError, AttributeError):
             return None
 
@@ -276,6 +307,8 @@ class CompanionState:
     candy_feature_seeded: bool = False
     history: dict[str, dict] = field(default_factory=dict)      # "yyyy-MM-dd" -> usage.day_stats row
     history_backfilled: bool = False
+    encounters: list[dict] = field(default_factory=list)       # wild Pokémon log, newest last
+    encounter_feature_seeded: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -288,6 +321,7 @@ class CompanionState:
             "inventory": self.inventory, "candyGrantTier": self.candy_grant_tier,
             "candyFeatureSeeded": self.candy_feature_seeded,
             "history": self.history, "historyBackfilled": self.history_backfilled,
+            "encounters": self.encounters, "encounterFeatureSeeded": self.encounter_feature_seeded,
         }
 
     @staticmethod
@@ -319,6 +353,8 @@ class CompanionState:
         s.history = {str(k): dict(v) for k, v in get("history", dict, {}).items()
                      if isinstance(v, dict) and isinstance(v.get("tokens"), int)}
         s.history_backfilled = get("historyBackfilled", bool, False)
+        s.encounters = [dict(e) for e in get("encounters", list, []) if isinstance(e, dict) and isinstance(e.get("species"), int)]
+        s.encounter_feature_seeded = get("encounterFeatureSeeded", bool, False)
         return s
 
 
@@ -507,6 +543,7 @@ class Companion:
 
         if s.install_baseline_set:
             self.evaluate_candy_grants(today_date)
+            self.evaluate_encounters(today_date)
         if self.event_until is not None and self.clock() > self.event_until:
             self.just_graduated = self.just_evolved_to = None
             self.event_until = None
@@ -631,7 +668,7 @@ class Companion:
             id=str(uuid.uuid4()), base_id=a.base_id, final_id=final_id, chain_order=list(a.path_ids),
             rarity=a.rarity, caught_at=_now_iso(), is_shiny=a.is_shiny, nature=a.nature,
             names={sid: dict(line.names[sid]) for sid in a.path_ids if sid in line.names} if line else None,
-            ivs=a.ivs))
+            ivs=a.ivs, source="graduated"))
         name = line.name(final_id, self.state.language) if line else f"#{final_id}"
         self.just_graduated = name
         self.event_until = self.clock() + 6
@@ -887,6 +924,126 @@ class Companion:
             grants.append({"key": week_key, "count": RARE_CANDY_WEEKLY_GRANT, "reason": "weekly goal reached"})
         return grants
 
+    # ---------------------------------------------------------- encounters
+    def current_encounter(self, today: str | None = None) -> dict | None:
+        today = today or self.today
+        for e in reversed(self.state.encounters):
+            if e.get("status") == "wild" and e.get("expires", "") >= today:
+                return e
+        return None
+
+    def encounter_triggers(self, today: str) -> list[tuple[str, str]]:
+        """(key, reason) for every trigger satisfied today: a streak day earned, a personal-best 5h block."""
+        due = []
+        if self.day_tokens(today) >= STREAK_MIN_TOKENS:
+            due.append((f"enc:day:{today}", "streak day earned"))
+        best_today = int(self.state.history.get(today, {}).get("bestBlock", 0))
+        best_before = max((int(r.get("bestBlock", 0)) for d, r in self.state.history.items() if d < today), default=0)
+        if best_today >= ENCOUNTER_BEST_BLOCK_MIN and best_today > best_before:
+            due.append((f"enc:best:{today}", "personal-best 5-hour block"))
+        return due
+
+    def evaluate_encounters(self, today: str) -> list[dict]:
+        """Spawn at most one wild Pokémon per satisfied trigger per day; expire stale ones.
+        First evaluation only seeds (upstream's no-retroactive rule)."""
+        s = self.state
+        for e in s.encounters:
+            if e.get("status") == "wild" and e.get("expires", "") < today:
+                e["status"] = "expired"
+        due = self.encounter_triggers(today)
+        if not s.encounter_feature_seeded:
+            for key, _ in due:
+                s.candy_grant_tier[key] = 1
+            s.encounter_feature_seeded = True
+            return []
+        spawned = []
+        for key, reason in due:
+            if key in s.candy_grant_tier:
+                continue
+            if self.current_encounter(today) is not None:
+                break                                   # one wild Pokémon at a time; the trigger stays open
+            enc = self.spawn_encounter(today, reason)
+            if enc is None:
+                break                                   # offline: try again next tick
+            s.candy_grant_tier[key] = 1
+            spawned.append(enc)
+        if len(s.encounters) > ENCOUNTER_LOG:
+            s.encounters = s.encounters[-ENCOUNTER_LOG:]
+        return spawned
+
+    def spawn_encounter(self, today: str, reason: str) -> dict | None:
+        try:
+            index = dict(self.api.base_index())
+            sid = self.choose_base()
+            if sid is None:
+                return None
+            sp = self.api.species(sid)
+        except PokeAPIError as e:
+            self.log(f"encounter: PokéAPI unavailable ({e}); retry next tick")
+            return None
+        luck = self.luck_signals(today)
+        shiny = self.rng.getrandbits(64) % luck["shinyDenominator"] == 0
+        rarity = rarity_from(sp["capture_rate"], sp["is_legendary"], sp["is_mythical"])
+        enc = {"id": str(uuid.uuid4()), "species": sid, "name": sp["names"].get(self.state.language) or sp["names"].get("en") or sp["name"].title(),
+               "names": dict(sp["names"]), "captureRate": int(sp.get("capture_rate", index.get(sid, 255))),
+               "rarity": rarity, "shiny": shiny, "nature": self.rng.choice(NATURES), "trigger": reason,
+               "appeared": today, "expires": (date.fromisoformat(today) + timedelta(days=ENCOUNTER_TTL_DAYS - 1)).isoformat(),
+               "status": "wild", "throws": 0, "luck": luck}
+        self.state.encounters.append(enc)
+        self._emit("encounter", species=sid, name=enc["name"], rarity=rarity, shiny=shiny, reason=reason)
+        return enc
+
+    def best_ball(self) -> str | None:
+        for kind in ("ultraBall", "greatBall", "pokeBall"):
+            if self.item_count(kind) > 0:
+                return kind
+        return None
+
+    def throw_ball(self, kind: str | None = None) -> tuple[bool, str]:
+        """Throw a ball at the current wild Pokémon. Catch → straight into the Pokédex with rolled IVs;
+        miss → the ball is gone and the Pokémon may flee."""
+        enc = self.current_encounter()
+        if enc is None:
+            return False, "no wild Pokémon around right now"
+        kind = kind or self.best_ball()
+        if kind is None:
+            return False, "no balls in the bag — buy one in the Shop"
+        if kind not in BALLS:
+            return False, "that is not a ball"
+        if self.item_count(kind) <= 0:
+            return False, f"no {BALLS[kind]['label']} in the bag — buy one in the Shop"
+        self.state.inventory[kind] -= 1
+        enc["throws"] = int(enc.get("throws", 0)) + 1
+        chance = catch_chance(enc["captureRate"], kind)
+        if self.rng.random() < chance:
+            luck = enc.get("luck") or self.luck_signals(self.today)
+            ivs = self.roll_ivs(int(luck.get("bonusRolls", 0)))
+            self.state.dex.append(DexEntry(id=str(uuid.uuid4()), base_id=enc["species"], final_id=enc["species"],
+                                           chain_order=[enc["species"]], rarity=enc["rarity"], caught_at=_now_iso(),
+                                           is_shiny=bool(enc.get("shiny")), nature=enc.get("nature"),
+                                           names={enc["species"]: dict(enc.get("names") or {})}, ivs=ivs, source="wild"))
+            self.state.collected_finals.add(f"{enc['species']}:{enc['species']}")
+            enc["status"] = "caught"
+            self._emit("caught", species=enc["species"], name=enc["name"], shiny=bool(enc.get("shiny")), ball=kind)
+            self.save()
+            return True, f"Gotcha! {enc['name']} was caught" + (" — shiny!" if enc.get("shiny") else "")
+        if self.rng.random() < FLEE_CHANCE:
+            enc["status"] = "fled"
+            self._emit("fled", species=enc["species"], name=enc["name"])
+            self.save()
+            return False, f"{enc['name']} broke free and fled…"
+        self.save()
+        return False, f"{enc['name']} broke free! ({chance * 100:.0f}% catch chance with a {BALLS[kind]['label']})"
+
+    def use_item(self, kind: str) -> tuple[bool, str]:
+        if kind == "rareCandy":
+            return self.use_rare_candy()
+        if kind == "mint":
+            return self.use_mint()
+        if kind in BALLS:
+            return self.throw_ball(kind)
+        return False, f"cannot use {kind}"
+
     # ---------------------------------------------------------------- shop
     def shop_entries(self) -> list[dict]:
         rows = [{"key": k, "label": v["label"], "emoji": v["emoji"], "price": v["price"], "blurb": v["blurb"],
@@ -934,7 +1091,7 @@ class Companion:
                                   chain_order=list(reached), rarity=a.rarity, caught_at=_now_iso(),
                                   is_shiny=a.is_shiny, nature=a.nature,
                                   names={sid: dict(self.line.names[sid]) for sid in reached if sid in self.line.names}
-                                  if self.line else None, released_at=_now_iso()))
+                                  if self.line else None, released_at=_now_iso(), source="released"))
             s.active = None
             self.line = None
         s.egg_usage = 0

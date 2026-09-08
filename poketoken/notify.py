@@ -205,6 +205,14 @@ def event_text(ev: dict) -> tuple[str, str] | None:
         detail = [f"{ev['released']} was released." if ev.get("released") else "",
                   f"Guaranteed {tier} or better." if tier != "plain" else ""]
         return "A new egg arrived", " ".join(d for d in detail if d)
+    if kind == "dittoReveal":
+        return "It was a Ditto all along!", f"{ev.get('disguise') or 'Your Pokémon'} dropped the disguise." + (" Shiny!" if ev.get("shiny") else "")
+    if kind == "encounter":
+        return f"A wild {name} appeared!", f"{ev.get('reason') or ''}".strip() + (" · Shiny!" if ev.get("shiny") else "") + " Throw a ball before it leaves."
+    if kind == "caught":
+        return f"Gotcha! {name} was caught", ("Shiny! " if ev.get("shiny") else "") + "It joined your Pokédex."
+    if kind == "fled":
+        return f"{name} fled", "Better luck with the next one."
     return None
 
 

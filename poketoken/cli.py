@@ -122,6 +122,10 @@ class App:
                        f"{fmt.compact(int(snap.tokens_per_minute or 0))} tpm ({snap.burn_tier}) · {fmt.cost(snap.block.cost)}")
         out.append(f"Week: {fmt.compact(snap.week.total)} · {fmt.cost(snap.week.cost)}    "
                    f"Month: {fmt.compact(snap.month.total)} · {fmt.cost(snap.month.cost)}")
+        enc = self.companion.current_encounter()
+        if enc:
+            out.append(f"Wild:   {enc['name']}{' ✨' if enc.get('shiny') else ''} [{enc['rarity']}] is waiting · "
+                       f"stays until {enc['expires']} · poketoken encounter --throw")
         out.append(f"Streak: {self.streak_line(snap.today_date)}")
         out.append(f"Goal:   {self.goal_line(snap.today_date)}")
         out.append("")
@@ -317,6 +321,38 @@ def cmd_battle(app: App, args) -> int:
     return 0
 
 
+def encounter_lines(app: App) -> list[str]:
+    c = app.companion
+    enc = c.current_encounter()
+    out = []
+    if enc is None:
+        out.append("No wild Pokémon around. Earn a streak day (1M+ tokens) or beat your best 5-hour block to meet one.")
+    else:
+        shiny = " ✨shiny" if enc.get("shiny") else ""
+        out.append(f"A wild {enc['name']}{shiny} [{enc['rarity']}] is here  ·  appeared {enc['appeared']} ({enc['trigger']})"
+                   f"  ·  stays until {enc['expires']}  ·  throws so far: {enc.get('throws', 0)}")
+        chances = "  ".join(f"{C.BALLS[k]['label']} {C.catch_chance(enc['captureRate'], k) * 100:.0f}%"
+                            + (f" (×{c.item_count(k)})" if c.item_count(k) else " (none)") for k in C.BALLS)
+        out.append("    catch chance: " + chances)
+    log = [e for e in c.state.encounters if e.get("status") != "wild"][-5:]
+    if log:
+        out.append("    recent: " + " · ".join(f"{e['name']} {e['status']} ({e['appeared']})" for e in reversed(log)))
+    return out
+
+
+def cmd_encounter(app: App, args) -> int:
+    app.tick()
+    if args.throw is not None:
+        alias = {"ball": "pokeBall", "poke": "pokeBall", "pokeball": "pokeBall", "great": "greatBall", "greatball": "greatBall",
+                 "ultra": "ultraBall", "ultraball": "ultraBall", "": None}
+        kind = alias.get(args.throw.lower(), args.throw) if args.throw else None
+        ok, msg = app.companion.throw_ball(kind)
+        print(("✓ " if ok else "✗ ") + msg)
+        return 0 if ok else 1
+    _print(encounter_lines(app))
+    return 0
+
+
 def cmd_dex(app: App, args) -> int:
     s = app.companion.state
     if not s.dex:
@@ -336,7 +372,8 @@ def cmd_shop(app: App, args) -> int:
     if args.buy:
         alias = {"candy": "rareCandy", "rarecandy": "rareCandy", "mint": "mint", "charm": "shinyCharm",
                  "shinycharm": "shinyCharm", "egg": "egg:plain", "egg-uncommon": "egg:uncommon",
-                 "egg-rare": "egg:rare"}
+                 "egg-rare": "egg:rare", "ball": "pokeBall", "pokeball": "pokeBall", "greatball": "greatBall",
+                 "ultraball": "ultraBall"}
         ok, msg = c.buy(alias.get(args.buy.lower(), args.buy))
         print(("✓ " if ok else "✗ ") + msg)
         return 0 if ok else 1
@@ -345,15 +382,17 @@ def cmd_shop(app: App, args) -> int:
         afford = "✓" if c.wallet >= r["price"] else " "
         owned = f"  (owned ×{r['owned']})" if r["owned"] else ""
         print(f" {afford} {r['emoji']} {r['label']:<14} {fmt.compact(r['price']):>6}   {r['blurb']}{owned}")
-    print("\nbuy with: poketoken shop --buy candy|mint|charm|egg|egg-uncommon|egg-rare")
+    print("\nbuy with: poketoken shop --buy candy|mint|charm|ball|greatball|ultraball|egg|egg-uncommon|egg-rare")
     return 0
 
 
 def cmd_bag(app: App, args) -> int:
     c = app.companion
     if args.use:
-        ok, msg = c.use_rare_candy() if args.use.lower() in ("candy", "rarecandy") else \
-            c.use_mint() if args.use.lower() == "mint" else (False, "use: candy | mint")
+        alias = {"candy": "rareCandy", "rarecandy": "rareCandy", "mint": "mint", "ball": "pokeBall", "pokeball": "pokeBall",
+                 "greatball": "greatBall", "ultraball": "ultraBall"}
+        kind = alias.get(args.use.lower())
+        ok, msg = c.use_item(kind) if kind else (False, "use: candy | mint | ball | greatball | ultraball")
         print(("✓ " if ok else "✗ ") + msg)
         return 0 if ok else 1
     items = [(k, n) for k, n in c.state.inventory.items() if n > 0]
@@ -461,6 +500,8 @@ def main(argv: list[str] | None = None) -> int:
     hi = sub.add_parser("history", help="daily usage table, streak and weekly goal")
     hi.add_argument("-n", "--days", type=int, default=30)
     sub.add_parser("stats", help="level, types, abilities and stats of your current Pokémon")
+    en = sub.add_parser("encounter", help="the wild Pokémon waiting for you, if any")
+    en.add_argument("--throw", nargs="?", const="", metavar="BALL", help="throw your best ball, or ball|greatball|ultraball")
     cd = sub.add_parser("card", help="print your battle card to share with a colleague")
     cd.add_argument("--json", action="store_true", help="raw card instead of the token")
     cd.add_argument("--trainer", help="set the trainer name shown on your card")
@@ -497,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = {"status": cmd_status, "watch": cmd_watch, "statusline": cmd_statusline, "refresh": cmd_refresh,
                "dex": cmd_dex, "shop": cmd_shop, "bag": cmd_bag, "pet": cmd_pet, "debug": cmd_debug,
                "history": cmd_history, "stats": cmd_stats, "card": cmd_card, "battle": cmd_battle,
+               "encounter": cmd_encounter,
                "notify": cmd_notify,
                "app": cmd_app, "window": cmd_app, "ui": cmd_app, "open": cmd_app,
                "close": cmd_close, "toggle": cmd_toggle, None: cmd_status}[args.cmd]

@@ -196,9 +196,25 @@ for junk in ("app.pid", "app.cmd", "app.log", "ui.json", "settings.json"):   # n
     (egg_dir / junk).unlink(missing_ok=True)
 rich_ui = scratch / "state-rich-ui"                 # untouched copy for the window walkthrough
 shutil.copytree(rich, rich_ui)
+_st = json.loads((rich_ui / "state.json").read_text())
+_st["encounters"] = [{"id": "e2", "species": 25, "name": "Pikachu", "names": {"en": "Pikachu"}, "captureRate": 190,
+                      "rarity": "common", "shiny": True, "nature": "jolly", "trigger": "personal-best 5-hour block",
+                      "appeared": "2099-01-01", "expires": "2099-12-31", "status": "wild", "throws": 0, "luck": {}}]
+_st["encounterFeatureSeeded"] = True
+_st["inventory"]["greatBall"] = 2
+(rich_ui / "state.json").write_text(json.dumps(_st))
 base = ["--state-dir", str(rich)]
+st = json.loads((rich / "state.json").read_text())
+st["encounters"] = [{"id": "e1", "species": 16, "name": "Pidgey", "names": {"en": "Pidgey"}, "captureRate": 255,
+                     "rarity": "common", "shiny": False, "nature": "brave", "trigger": "streak day earned",
+                     "appeared": "2099-01-01", "expires": "2099-12-31", "status": "wild", "throws": 0, "luck": {}}]
+st["encounterFeatureSeeded"] = True
+st["inventory"]["pokeBall"] = 3
+(rich / "state.json").write_text(json.dumps(st))
 card_file = scratch / "card.txt"
-for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], ["stats"], ["dex"], ["shop"],
+for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], ["stats"], ["encounter"],
+             ["encounter", "--throw"], ["encounter", "--throw", "ultraball"], ["shop", "--buy", "ball"], ["bag", "--use", "ball"],
+             ["dex"], ["shop"],
              ["card", "--trainer", "Audit"], ["card", "--json"], ["shop", "--buy", "mint"],
              ["shop", "--buy", "egg-rare"], ["bag"], ["bag", "--use", "candy"], ["bag", "--use", "mint"],
              ["bag", "--use", "bogus"], ["debug"], []):
@@ -219,7 +235,7 @@ for argv in (["notify"], ["notify", "status"], ["notify", "off"], ["notify", "on
     if rc != 0:
         problems.append(f"cli {' '.join(argv)} rc={rc}")
 # empty-dex / empty-bag paths
-for argv in (["dex"], ["bag"], ["stats"], ["card"], ["battle", str(card_file)]):
+for argv in (["dex"], ["bag"], ["stats"], ["card"], ["battle", str(card_file)], ["encounter"], ["encounter", "--throw"]):
     rc, out = quiet(cli.main, ["--state-dir", str(egg_dir)] + argv)
     print(f" egg-state {argv[0]:<12} rc={rc} {out.strip()[:60]}")
 # watch: one iteration then Ctrl-C
@@ -294,6 +310,8 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
             problems.append(f"window[{label}] tab {tab} drew nothing")
     grab(win, f"win-{label}-bag")
     if label == "rich":
+        grab(win, "win-rich-home-encounter")
+        win._act("throw:greatBall"); win.root.update(); win._act("throw:greatBall"); win.root.update()   # arm, throw
         win.set_tab("shop"); win._act("buy:mint"); win.root.update()          # arms
         win._act("buy:mint"); win.root.update()                               # buys
         win._act("buy:egg:rare"); win.armed = None                            # arm then let it lapse

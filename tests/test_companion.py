@@ -276,6 +276,20 @@ class UsageTests(unittest.TestCase):
         f.write_text(self.LINE + "\n")                    # rewritten smaller → full reparse
         self.assertEqual(len(r.scan(0)), 1)
 
+    def test_project_label_and_aggregates(self):
+        home = str(Path.home()).replace("/", "-")
+        self.assertEqual(U.project_label(f"/x/.claude/projects/{home}-repo-app/s.jsonl"), "repo-app")
+        self.assertEqual(U.project_label(f"/x/.claude/projects/{home}/s.jsonl"), "~")
+        self.assertEqual(U.project_label("/x/.claude/projects/-srv-work/s.jsonl"), "srv-work")
+        self.assertEqual(U.project_label("/nowhere/s.jsonl"), "")
+        a = U.parse_line(self.LINE, "repo-app")
+        b = U.parse_line(self.LINE.replace("msg_1", "msg_2"), "other-proj")
+        import datetime as dt
+        snap = U.summarize([a, b], dt.datetime.fromtimestamp(a.ts))
+        self.assertEqual(snap.projects_today, {"repo-app": a.total, "other-proj": b.total} if a.total >= b.total
+                         else {"other-proj": b.total, "repo-app": a.total})
+        self.assertAlmostEqual(sum(snap.models_cost_today.values()), a.cost + b.cost)
+
     def test_burn_tiers(self):
         self.assertEqual(U.burn_tier(None), "idle")
         self.assertEqual(U.burn_tier(999), "idle")

@@ -152,7 +152,10 @@ def resolve_sprites(app, extra: tuple = ()) -> dict:
             wanted.add((sid, e.is_shiny))
     for sid, shiny in wanted:
         out[("static", sid, shiny)] = api.sprite(sid, animated=False, shiny=shiny)
-    for name in ("rare-candy", "shiny-charm"):
+    enc = app.companion.current_encounter()
+    if enc:
+        out[("static", enc["species"], bool(enc.get("shiny")))] = api.sprite(enc["species"], animated=False, shiny=bool(enc.get("shiny")))
+    for name in ("rare-candy", "shiny-charm", "poke-ball", "great-ball", "ultra-ball"):
         out[("item", name)] = api.item_sprite(name)
     return out
 
@@ -390,6 +393,12 @@ class PokeWindow:
             return f"+{ev.get('count')} Rare Candy · {ev.get('reason')}"
         if k == "dittoReveal":
             return f"It was a Ditto all along! ({ev.get('disguise')})" + ("  ✦ Shiny!" if ev.get("shiny") else "")
+        if k == "encounter":
+            return f"A wild {ev.get('name')} appeared!" + ("  ✦ Shiny!" if ev.get("shiny") else "") + f"  ({ev.get('reason')})"
+        if k == "caught":
+            return f"Gotcha! {ev.get('name')} joined the Pokédex" + ("  ✦" if ev.get("shiny") else "")
+        if k == "fled":
+            return f"{ev.get('name')} fled…"
         return k
 
     def _toast(self, text: str, seconds: float = 4.0) -> None:
@@ -460,8 +469,9 @@ class PokeWindow:
             if kind == "buy":
                 ok, msg = self.app.companion.buy(key)
             elif kind == "use":
-                ok, msg = (self.app.companion.use_rare_candy() if key == "rareCandy"
-                           else self.app.companion.use_mint())
+                ok, msg = self.app.companion.use_item(key)
+            elif kind == "throw":
+                ok, msg = self.app.companion.throw_ball(key)
             else:
                 ok, msg = False, "unknown action"
             self.app.companion.drain_events()
@@ -698,6 +708,10 @@ class PokeWindow:
         state = comp.display_state
         accent = STATE_COLOR.get(state, "blue")
 
+        enc = comp.current_encounter()
+        if enc:
+            y = self.draw_encounter_card(y, x0, cw, enc) + 10
+
         # hero card
         hero_tag = ("hero",) if s.active else ()
         card = self.card(x0, y, cw, 10, tags=hero_tag)
@@ -812,6 +826,39 @@ class PokeWindow:
                 self.sep(x0 + 18, ry + 37, cw - 36)
             ry += 38
         return y + h + 12
+
+    def draw_encounter_card(self, y, x0, cw, enc: dict) -> int:
+        """A wild Pokémon is waiting: who it is, how likely a catch is, and a throw button."""
+        comp = self.app.companion
+        h = 92
+        self.card(x0, y, cw, h)
+        self.text(x0 + 18, y + 10, "WILD ENCOUNTER", "captionB", "orange")
+        self.text(x0 + cw - 18, y + 10, enc.get("trigger", ""), "caption", "tertiary", anchor="ne")
+        shiny = bool(enc.get("shiny"))
+        ph = self.img(self.payload["paths"].get(("static", enc["species"], shiny)) if self.payload else None, 56, "card")
+        if ph:
+            self.c.create_image(x0 + 18 + 28, y + 58, image=ph)
+        tx = x0 + 18 + 64
+        self.text(tx, y + 30, enc["name"] + ("  ✦" if shiny else ""), "title2", "yellow" if shiny else "label")
+        px = tx
+        px += self.pill(px, y + 56, enc["rarity"].title(), RARITY_COLOR.get(enc["rarity"], "gray")) + 6
+        ball = comp.best_ball()
+        leaves = "leaves tonight" if enc.get("expires") == comp.today else "leaves tomorrow"
+        bw = 96
+        bx, by = x0 + cw - 18 - bw, y + 40
+        caption = (f"{C.catch_chance(enc['captureRate'], ball) * 100:.0f}% · {C.BALLS[ball]['label']}" if ball
+                   else "no balls") + f" · {leaves}"
+        self.text(px + 2, y + 59, self._ellipsize(caption, "caption", bx - px - 12), "caption", "secondary")
+        if ball:
+            tag = f"throw:{ball}"
+            armed = self.armed and self.armed[0] == tag
+            self.button(bx, by, bw, 28, "Throw?" if armed else "Throw", tag, "armed" if armed else "filled")
+        else:
+            self.rrect(bx, by, bx + bw, by + 28, 14, fill="fill", tags=("to-shop",))
+            self.text(bx + bw / 2, by + 14, "Shop ›", "captionB", "blue", anchor="center", tags=("to-shop",))
+            self.c.tag_bind("to-shop", "<Button-1>", lambda e: self.set_tab("shop"))
+            self._hand("to-shop")
+        return y + h
 
     # ------------------------------------------------------------------ dex
     def draw_dex(self, y, x0, cw) -> int:
@@ -1022,7 +1069,7 @@ class PokeWindow:
         elif raising:
             tail.append("raising")
         elif record:
-            tail.append("released" if record.is_released else "graduated")
+            tail.append("released" if record.is_released else "caught in the wild" if record.is_wild else "graduated")
         if nature:
             tail.append(nature.title())
         if view:
@@ -1050,8 +1097,9 @@ class PokeWindow:
         if raising and a:
             rows.append((f"Raising · stage {a.stage_index + 1} of {a.total_forms}", (a.nature or "").title(), "now", "blue"))
         for e in sorted(entries, key=lambda e: e.caught_at or "", reverse=True):
-            rows.append((("released" if e.is_released else "graduated") + f" as {e.name(e.final_id, s.language)}",
-                         (e.nature or "").title(), (e.caught_at or "")[:10], "gray" if e.is_released else "green"))
+            verb = "released" if e.is_released else "caught" if e.is_wild else "graduated"
+            rows.append((f"{verb} as {e.name(e.final_id, s.language)}", (e.nature or "").title(),
+                         (e.caught_at or "")[:10], "gray" if e.is_released else "orange" if e.is_wild else "green"))
         h = 12 + 38 * max(1, len(rows)) + 4
         self.card(x0, y, cw, h)
         self.text(x0 + 18, y + 12, "RECORDS", "captionB", "secondary")
@@ -1156,7 +1204,8 @@ class PokeWindow:
             if tier in ("uncommon", "rare"):
                 self.dot(cx + 14, cy - 12, 5, RARITY_COLOR[tier])
             return
-        sprite = {"rareCandy": "rare-candy", "shinyCharm": "shiny-charm"}.get(key)
+        sprite = {"rareCandy": "rare-candy", "shinyCharm": "shiny-charm", "pokeBall": "poke-ball",
+                  "greatBall": "great-ball", "ultraBall": "ultra-ball"}.get(key)
         ph = self.img(paths.get(("item", sprite)), 30, "card", crop=True) if sprite else None
         if ph:
             self.c.create_image(cx, cy, image=ph)
@@ -1185,14 +1234,15 @@ class PokeWindow:
             self.text(bx - 10, ry + 12, f"×{n}", "headline", "secondary", anchor="ne")
             self.text(x0 + 66, ry + 32, self._ellipsize(it["blurb"], "caption", bx - (x0 + 66) - 10), "caption", "secondary")
             tag = f"use:{k}"
+            usable = comp.current_encounter() is not None if k in C.BALLS else not comp.is_egg
             if it["passive"]:
                 self.pill(bx + bw - self.measure("Active", "captionB") - 16, by + 2, "Active", "green")
-            elif comp.is_egg:
-                self.button(bx, by, bw, 26, "Use", tag, "disabled")
+            elif not usable:
+                self.button(bx, by, bw, 26, "Throw" if k in C.BALLS else "Use", tag, "disabled")
             elif self.armed and self.armed[0] == tag:
                 self.button(bx, by, bw, 26, "Use?", tag, "armed")
             else:
-                self.button(bx, by, bw, 26, "Use", tag, "filled")
+                self.button(bx, by, bw, 26, "Throw" if k in C.BALLS else "Use", tag, "filled")
             if i < len(items) - 1:
                 self.sep(x0 + 66, ry + 67, cw - 82)
             ry += 68

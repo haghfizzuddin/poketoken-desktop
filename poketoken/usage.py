@@ -35,6 +35,7 @@ class Entry:
     cache_write_5m: int
     cache_write_1h: int
     cache_read: int
+    project: str = ""    # Claude Code project folder the session belongs to (decoded label)
 
     @property
     def cache_write(self) -> int:
@@ -66,7 +67,21 @@ def _iso_epoch(s: str) -> float | None:
         return None
 
 
-def parse_line(line: str) -> Entry | None:
+def project_label(path: str) -> str:
+    """Claude Code names project folders by the working directory with '/' turned into '-'
+    (e.g. -home-me-repo-app). Drop the encoded home prefix so the label reads 'repo-app'."""
+    parts = Path(path).parts
+    try:
+        folder = parts[parts.index("projects") + 1]
+    except (ValueError, IndexError):
+        return ""
+    home = str(Path.home()).replace("/", "-").replace("\\", "-")
+    if folder.startswith(home):
+        folder = folder[len(home):]
+    return folder.strip("-") or "~"
+
+
+def parse_line(line: str, project: str = "") -> Entry | None:
     if '"usage"' not in line or '"assistant"' not in line:
         return None
     try:
@@ -101,6 +116,7 @@ def parse_line(line: str) -> Entry | None:
         cache_write_5m=cw_total - cw1,
         cache_write_1h=cw1,
         cache_read=_int(usage.get("cache_read_input_tokens")),
+        project=project,
     )
 
 
@@ -205,10 +221,11 @@ class UsageReader:
         lines = (fs.partial + data).split(b"\n")
         fs.partial = lines.pop()          # incomplete tail; b"" if data ended on a newline
         n = 0
+        project = project_label(path)
         for raw in lines:
             if b'"usage"' not in raw or b'"assistant"' not in raw:
                 continue
-            e = parse_line(raw.decode("utf-8", "replace"))
+            e = parse_line(raw.decode("utf-8", "replace"), project)
             if e is None:
                 continue
             n += 1
@@ -277,6 +294,8 @@ class Snapshot:
     burn_tier: str
     models_today: dict[str, int]
     entries: int
+    models_cost_today: dict[str, float] = field(default_factory=dict)
+    projects_today: dict[str, int] = field(default_factory=dict)
 
     @property
     def has_data(self) -> bool:
@@ -327,12 +346,17 @@ def summarize(entries: list[Entry], now: datetime | None = None) -> Snapshot:
 
     t, w, m = Bucket(), Bucket(), Bucket()
     models: dict[str, int] = {}
+    models_cost: dict[str, float] = {}
+    projects: dict[str, int] = {}
     recent: list[Entry] = []
     for e in entries:
         if e.local_day == today:
             t.add(e)
             if e.total > 0:
                 models[e.model] = models.get(e.model, 0) + e.total
+                models_cost[e.model] = models_cost.get(e.model, 0.0) + e.cost
+                key = e.project or "other"
+                projects[key] = projects.get(key, 0) + e.total
         if e.local_day >= week_start:
             w.add(e)
         if e.local_day.startswith(month_prefix):
@@ -352,4 +376,6 @@ def summarize(entries: list[Entry], now: datetime | None = None) -> Snapshot:
     return Snapshot(now=now, today_date=today, today=t, week=w, month=m, block=block,
                     block_start=block_start, tokens_per_minute=tpm, burn_tier=burn_tier(tpm),
                     models_today=dict(sorted(models.items(), key=lambda kv: -kv[1])),
-                    entries=len(entries))
+                    entries=len(entries),
+                    models_cost_today=dict(sorted(models_cost.items(), key=lambda kv: -kv[1])),
+                    projects_today=dict(sorted(projects.items(), key=lambda kv: -kv[1])))
