@@ -1,0 +1,8 @@
+{"type": "user", "timestamp": "2026-03-11T02:30:00.000Z", "message": {"id": "u-1", "usage": {"input_tokens": 999999}}}
+{"type": "user", "timestamp": "2026-03-11T02:33:00.000Z", "requestId": "req-noise", "message": {"id": "msg-noise", "role": "assistant", "model": "claude-opus-5", "usage": {"input_tokens": 777777, "output_tokens": 777}}}
+{"type": "assistant", "timestamp": "2026-03-11T02:31:00.000Z", "message": {"id": "m-x", "model": "claude-opus-5"}}
+{"type": "assistant", "note": "the word \"usage\" in prose", "timestamp": "2026-03-11T02:32:00.000Z"}
+{"type": "assistant", "message": {"id": "m-y", "usage": {"input_tokens": 5}}}
+{"type": "assistant", "timestamp": "not-a-date", "message": {"id": "m-z", "usage": {"input_tokens": 5}}}
+{"type":"assistant","message":{"usage":{"input_tokens":5}
+

@@ -1,0 +1,1 @@
+{"type": "assistant", "timestamp": "2026-03-11T04:00:00.000Z", "requestId": "req-12", "message": {"id": "msg-12", "model": "some-unreleased-model", "usage": {"input_tokens": 11, "output_tokens": 110, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 120}}}

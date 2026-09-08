@@ -1,0 +1,1 @@
+{"type": "assistant", "timestamp": "2026-03-11T06:20:00.000Z", "requestId": "req-4", "message": {"id": "msg-4", "model": "claude-haiku-4-5-20251001", "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}}}

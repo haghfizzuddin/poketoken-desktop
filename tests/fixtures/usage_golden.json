@@ -1,0 +1,332 @@
+{
+  "bestBlockAll": 23169,
+  "dayStats": {
+    "2026-02-25": {
+      "bestBlock": 1450,
+      "cacheRatio": 0.8824,
+      "cacheRead": 1200,
+      "cacheWrite": 150,
+      "cost": 0.0038,
+      "input": 10,
+      "output": 90,
+      "tokens": 1450
+    },
+    "2026-03-02": {
+      "bestBlock": 2215,
+      "cacheRatio": 0.8717,
+      "cacheRead": 1800,
+      "cacheWrite": 250,
+      "cost": 0.0025,
+      "input": 15,
+      "output": 150,
+      "tokens": 2215
+    },
+    "2026-03-09": {
+      "bestBlock": 2520,
+      "cacheRatio": 0.8621,
+      "cacheRead": 2000,
+      "cacheWrite": 300,
+      "cost": 0.0083,
+      "input": 20,
+      "output": 200,
+      "tokens": 2520
+    },
+    "2026-03-10": {
+      "bestBlock": 496,
+      "cacheRatio": 0.8584,
+      "cacheRead": 400,
+      "cacheWrite": 60,
+      "cost": 0.0024,
+      "input": 6,
+      "output": 30,
+      "tokens": 496
+    },
+    "2026-03-11": {
+      "bestBlock": 23169,
+      "cacheRatio": 0.9192,
+      "cacheRead": 21240,
+      "cacheWrite": 1730,
+      "cost": 0.0916,
+      "input": 136,
+      "output": 2253,
+      "tokens": 25359
+    }
+  },
+  "entries": [
+    {
+      "cacheRead": 1200,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 150,
+      "cost": 0.003838,
+      "id": "msg-9|req-9",
+      "input": 10,
+      "localDay": "2026-02-25",
+      "model": "claude-opus-5",
+      "output": 90,
+      "project": "alpha",
+      "total": 1450,
+      "ts": 1771984800.0
+    },
+    {
+      "cacheRead": 1800,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 250,
+      "cost": 0.002515,
+      "id": "msg-8|req-8",
+      "input": 15,
+      "localDay": "2026-03-02",
+      "model": "claude-sonnet-5",
+      "output": 150,
+      "project": "alpha",
+      "total": 2215,
+      "ts": 1772416800.0
+    },
+    {
+      "cacheRead": 2000,
+      "cacheWrite1h": 100,
+      "cacheWrite5m": 200,
+      "cost": 0.00835,
+      "id": "msg-7|req-7",
+      "input": 20,
+      "localDay": "2026-03-09",
+      "model": "claude-opus-5",
+      "output": 200,
+      "project": "alpha",
+      "total": 2520,
+      "ts": 1773021600.0
+    },
+    {
+      "cacheRead": 400,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 60,
+      "cost": 0.00241,
+      "id": "msg-6|req-6",
+      "input": 6,
+      "localDay": "2026-03-10",
+      "model": "claude-fable-5-1",
+      "output": 30,
+      "project": "alpha",
+      "total": 496,
+      "ts": 1773157800.0
+    },
+    {
+      "cacheRead": 300,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 50,
+      "cost": 0.00175,
+      "id": "msg-5|req-5",
+      "input": 5,
+      "localDay": "2026-03-11",
+      "model": "claude-fable-5-1",
+      "output": 20,
+      "project": "alpha",
+      "total": 375,
+      "ts": 1773159000.0
+    },
+    {
+      "cacheRead": 700,
+      "cacheWrite1h": 25,
+      "cacheWrite5m": 75,
+      "cost": 0.000844,
+      "id": "msg-3|req-3",
+      "input": 8,
+      "localDay": "2026-03-11",
+      "model": "claude-sonnet-5",
+      "output": 40,
+      "project": "alpha",
+      "total": 848,
+      "ts": 1773169200.0
+    },
+    {
+      "cacheRead": 800,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 90,
+      "cost": 0.004895,
+      "id": "msg-11|req-11",
+      "input": 7,
+      "localDay": "2026-03-11",
+      "model": "claude-fable-5-1",
+      "output": 70,
+      "project": "~",
+      "total": 967,
+      "ts": 1773190800.0
+    },
+    {
+      "cacheRead": 440,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 40,
+      "cost": 0.000636,
+      "id": "msg-14|req-14",
+      "input": 4,
+      "localDay": "2026-03-11",
+      "model": "claude-sonnet-5",
+      "output": 44,
+      "project": "srv-work-beta",
+      "total": 528,
+      "ts": 1773192600.0
+    },
+    {
+      "cacheRead": 9000,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 500,
+      "cost": 0.0539,
+      "id": "msg-1|req-1",
+      "input": 40,
+      "localDay": "2026-03-11",
+      "model": "claude-fable-5-1",
+      "output": 900,
+      "project": "alpha",
+      "total": 10440,
+      "ts": 1773194400.0
+    },
+    {
+      "cacheRead": 1500,
+      "cacheWrite1h": 200,
+      "cacheWrite5m": 0,
+      "cost": 0.00441,
+      "id": "msg-2|req-2",
+      "input": 12,
+      "localDay": "2026-03-11",
+      "model": "claude-opus-5",
+      "output": 64,
+      "project": "alpha",
+      "total": 1776,
+      "ts": 1773198900.0
+    },
+    {
+      "cacheRead": 1600,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 180,
+      "cost": 0.019495,
+      "id": "msg-13|req-13",
+      "input": 14,
+      "localDay": "2026-03-11",
+      "model": "claude-opus-5",
+      "output": 700,
+      "project": "alpha",
+      "total": 2494,
+      "ts": 1773200400.0
+    },
+    {
+      "cacheRead": 900,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 120,
+      "cost": 0,
+      "id": "msg-12|req-12",
+      "input": 11,
+      "localDay": "2026-03-11",
+      "model": "some-unreleased-model",
+      "output": 110,
+      "project": "",
+      "total": 1141,
+      "ts": 1773201600.0
+    },
+    {
+      "cacheRead": 3000,
+      "cacheWrite1h": 150,
+      "cacheWrite5m": 250,
+      "cost": 0.004385,
+      "id": "msg-10|req-10",
+      "input": 30,
+      "localDay": "2026-03-11",
+      "model": "claude-sonnet-5",
+      "output": 250,
+      "project": "srv-work-beta",
+      "total": 3680,
+      "ts": 1773207900.0
+    },
+    {
+      "cacheRead": 0,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 0,
+      "cost": 0.0,
+      "id": "msg-4|req-4",
+      "input": 0,
+      "localDay": "2026-03-11",
+      "model": "claude-haiku-4-5-20251001",
+      "output": 0,
+      "project": "gamma",
+      "total": 0,
+      "ts": 1773210000.0
+    },
+    {
+      "cacheRead": 3000,
+      "cacheWrite1h": 0,
+      "cacheWrite5m": 50,
+      "cost": 0.001285,
+      "id": "msg-15|req-15",
+      "input": 5,
+      "localDay": "2026-03-11",
+      "model": "claude-sonnet-5",
+      "output": 55,
+      "project": "srv-work-beta",
+      "total": 3110,
+      "ts": 1773210600.0
+    }
+  ],
+  "readerFiles": 7,
+  "snapshot": {
+    "block": {
+      "cacheRead": 19440,
+      "cacheWrite": 1490,
+      "cost": 0.084111,
+      "count": 8,
+      "input": 116,
+      "output": 2123,
+      "total": 23169
+    },
+    "blockStart": 1773192600.0,
+    "burnTier": "idle",
+    "entryCount": 15,
+    "modelsCostToday": {
+      "claude-fable-5-1": 0.060545,
+      "claude-opus-5": 0.023905,
+      "claude-sonnet-5": 0.00715,
+      "some-unreleased-model": 0.0
+    },
+    "modelsToday": {
+      "claude-fable-5-1": 11782,
+      "claude-opus-5": 4270,
+      "claude-sonnet-5": 8166,
+      "some-unreleased-model": 1141
+    },
+    "month": {
+      "cacheRead": 25440,
+      "cacheWrite": 2340,
+      "cost": 0.104874,
+      "count": 14,
+      "input": 177,
+      "output": 2633,
+      "total": 30590
+    },
+    "projectsToday": {
+      "alpha": 15933,
+      "other": 1141,
+      "srv-work-beta": 7318,
+      "~": 967
+    },
+    "today": {
+      "cacheRead": 21240,
+      "cacheWrite": 1730,
+      "cost": 0.0916,
+      "count": 11,
+      "input": 136,
+      "output": 2253,
+      "total": 25359
+    },
+    "todayByProvider": {
+      "claude_code": 25359
+    },
+    "todayDate": "2026-03-11",
+    "tokensPerMinute": 77.23,
+    "week": {
+      "cacheRead": 23640,
+      "cacheWrite": 2090,
+      "cost": 0.102359,
+      "count": 13,
+      "input": 162,
+      "output": 2483,
+      "total": 28375
+    }
+  }
+}
