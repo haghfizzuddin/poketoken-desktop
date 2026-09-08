@@ -10,6 +10,8 @@ evolve it through its real evolution line, graduate it into your Pokédex, start
 <p align="center">
   <img src="docs/screenshots/home.png" width="230" alt="Home">
   <img src="docs/screenshots/stats.png" width="230" alt="Stats">
+</p>
+<p align="center">
   <img src="docs/screenshots/shop.png" width="230" alt="Shop">
   <img src="docs/screenshots/dex.png" width="230" alt="Pokédex">
 </p>
