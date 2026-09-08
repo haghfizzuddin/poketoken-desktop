@@ -1542,7 +1542,8 @@ class PokeWindow:
         if is_current:
             view = comp.stats_view(meta) if meta else None
         elif meta:
-            view = comp.stats_view_static(meta, record.ivs if record else None, nature)
+            view = comp.stats_view_static(meta, record.ivs if record else None, nature,
+                                          level=record.battle_level() if record else C.LEVEL_MAX)
         else:
             view = None
 
@@ -1572,8 +1573,8 @@ class PokeWindow:
             line2 = f"Lv {view['level']}  ·  {rarity.title()}"
         elif is_current:
             line2 = f"{rarity.title()}  ·  raising"
-        elif record and not record.is_released and record.final_id == sid:
-            line2 = f"Lv 100  ·  {rarity.title()}"
+        elif record and record.final_id == sid:
+            line2 = f"Lv {record.battle_level()}  ·  {rarity.title()}"
         else:
             line2 = rarity.title()
         self.text(tx, ty, self._ellipsize(line2, "headline", cw - MINI_BOX - 50), "headline", "label")
@@ -1678,7 +1679,8 @@ class PokeWindow:
         """Abilities and the six stats with IVs; `live` = the Pokémon being raised (shows its luck)."""
         card = self.card(x0, y, cw, 10)
         cy = y + 12
-        self.text(x0 + 18, cy, "STATS" if live else "STATS AT LV 100", "captionB", "secondary")
+        title = "STATS" if live or view is None else f"STATS AT LV {view['level']}"
+        self.text(x0 + 18, cy, title, "captionB", "secondary")
         if view is None:
             self.text(x0 + cw - 18, cy, "unavailable offline" if failed else "loading…", "caption", "tertiary", anchor="ne")
             cy += 30
@@ -2139,8 +2141,11 @@ class PokeWindow:
         cy += 20
         fsid = BU.fighter_sid(self.app.companion, self.app.dir)
         from_dex = fsid is not None and (s.active is None or fsid != s.active.current_id)
-        self.text(x0 + pad, cy, "from your Pokédex · Lv 100" if from_dex else "the Pokémon you are raising",
-                  "caption", "tertiary")
+        note = "the Pokémon you are raising"
+        if from_dex:
+            lvl = (mine or {}).get("level")
+            note = f"from your Pokédex · Lv {lvl}" if lvl else "from your Pokédex"
+        self.text(x0 + pad, cy, note, "caption", "tertiary")
         self.text(x0 + cw - pad, cy, "Change ›", "captionB", "blue", anchor="ne", tags=("pick-fighter",))
         self.c.tag_bind("pick-fighter", "<Button-1>", lambda e: self.set_tab("dex"))
         self._hand("pick-fighter")
