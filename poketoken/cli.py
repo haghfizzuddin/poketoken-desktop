@@ -1,4 +1,5 @@
-"""Command-line front end: status card, live watch, statusline segment, shop, bag, dex, pet."""
+"""Command-line front end: status card, live watch, statusline segment, shop, bag, dex, pet,
+timer / autostart setup and save export/import."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, battle as B, companion as C, fmt, instance, notify, settings, usage as U
+from . import __version__, battle as B, companion as C, fmt, instance, notify, service, settings, usage as U
 from .paths import state_dir
 from .pokeapi import PokeAPI, PokeAPIError
 
@@ -449,6 +450,125 @@ def cmd_notify(app: App, args) -> int:
     return 0
 
 
+def cmd_timer(app: App, args) -> int:
+    unit_dir = service.systemd_user_dir()
+    if not service.has_systemd_user():
+        print("✗ no systemd user session here (`systemctl --user is-system-running` does not say running).")
+        print("  Schedule `poketoken refresh` yourself instead — e.g. this crontab line:")
+        print("    " + service.cron_hint(app.dir))
+        return 1
+    if args.action == "on":
+        written, r = service.timer_on(app.dir, unit_dir=unit_dir)
+        for p in written:
+            print(f"wrote {p}")
+        if r.returncode != 0:
+            print(f"✗ systemctl --user enable --now {service.TIMER} failed (exit {r.returncode}): {r.stderr.strip()}")
+            return 1
+        print(f"✓ {service.TIMER} enabled: `poketoken refresh` runs {service.REFRESH_AFTER_BOOT} after login and "
+              f"every {service.REFRESH_EVERY} after that (missed runs catch up at the next boot).")
+        print("  It keeps streaks, Rare Candy grants and hatching advancing while the window is closed, and")
+        print("  closes the pre-midnight gap: tokens burned after the day's last refresh are never credited")
+        print("  once the date rolls over, so the loss is now at most one interval.")
+        print(f"  check: poketoken timer status · journalctl --user -u {service.SERVICE}")
+        return 0
+    if args.action == "off":
+        removed = service.timer_off(unit_dir)
+        print(f"✓ {service.TIMER} disabled; removed " + (", ".join(p.name for p in removed) or "nothing (no unit files)"))
+        return 0
+    st = service.timer_status(unit_dir)
+    if not any(st["files"].values()) and not st["loaded"]:
+        print(f"timer: not installed — `poketoken timer on` (units would go to {st['unit_dir']})")
+        return 0
+    state = "active" if st["active"] else ("loaded, inactive" if st["loaded"] else "unit files present, not loaded")
+    print(f"timer: {state} · {service.TIMER} in {st['unit_dir']}")
+    for name, present in st["files"].items():
+        print(f"  {name}: {'present' if present else 'missing'}")
+    print(f"  last run: {st['last_run'] or 'never'}" + (f" ({st['service_result']})" if st["last_run"] and st["service_result"] else ""))
+    print(f"  next run: {st['next_run'] or 'not scheduled'}")
+    if st["last_log"]:
+        print(f"  last output: {st['last_log']}")
+    return 0
+
+
+def cmd_autostart(app: App, args) -> int:
+    try:
+        flavour, path = service.autostart_target()
+    except service.Unsupported as e:
+        print(f"✗ autostart unavailable: {e}")
+        return 1
+    where = {"wsl": "Windows Startup folder (through wsl.exe)", "windows": "Windows Startup folder",
+             "linux": "XDG autostart"}[flavour]
+    if args.action == "on":
+        service.autostart_on(path, service.autostart_text(flavour, app.dir))
+        print(f"✓ autostart on — {where}: {path}")
+        print("  PokeToken opens in the background at sign-in (`poketoken app`).")
+        if flavour == "wsl" and not (Path.home() / ".local/bin/poketoken").exists():
+            print("  note: ~/.local/bin/poketoken is missing — run scripts/install.sh or the script has nothing to start")
+        return 0
+    if args.action == "off":
+        removed = service.autostart_off(path)
+        print(f"✓ autostart off — removed {path}" if removed else f"autostart was already off ({path} not found)")
+        return 0
+    print(f"autostart: {'on' if path.exists() else 'off'} · {where} · {path}")
+    return 0
+
+
+def _summary(app: App, state: dict) -> str:
+    return service.save_summary(state, lambda base, sid: service.cached_name(app.api.cache_dir, base, sid,
+                                                                             state.get("language") or "en"))
+
+
+def cmd_export(app: App, args) -> int:
+    try:
+        app.tick()                                         # credit usage up to this second first
+    except Exception as e:  # noqa: BLE001 — export must still work when the refresh cannot
+        print(f"note: refresh before export failed ({e}); exporting the save as it is on disk")
+    state = service.read_state(app.dir)
+    if state is None:
+        print(f"✗ no save to export yet ({app.dir / service.STATE_FILE} is missing or unreadable)")
+        return 1
+    dest = Path(args.path) if args.path else service.default_export_path()
+    if dest.is_dir():
+        dest = dest / service.default_export_path()
+    try:
+        service.write_state(dest, service.export_envelope(state))
+    except OSError as e:
+        print(f"✗ cannot write {dest}: {e.strerror or e}")
+        return 1
+    print(f"✓ exported {dest}")
+    print(f"  {_summary(app, state)}")
+    print("  on the other machine:  poketoken import <file>  (add --replace to overwrite its save)")
+    return 0
+
+
+def cmd_import(app: App, args) -> int:
+    try:
+        env, incoming = service.read_envelope(args.path)
+    except OSError as e:
+        print(f"✗ cannot read {args.path}: {e.strerror or e}")
+        return 1
+    except ValueError as e:
+        print(f"✗ {args.path} is not a poketoken export: {e}")
+        return 1
+    print(f"incoming ({env.get('host', '?')}, {env.get('exportedAt', '?')}):\n  {_summary(app, incoming)}")
+    current = service.read_state(app.dir)
+    if current is not None:
+        print(f"current ({app.dir}):\n  {_summary(app, current)}")
+    if instance.running_pid(app.dir) is not None:
+        print("✗ the PokeToken window is running; it would overwrite the imported save on its next refresh.")
+        print("  close it first:  poketoken close")
+        return 1
+    try:
+        backup = service.import_state(app.dir, incoming, replace=args.replace)
+    except service.ImportRefused as e:
+        print(f"✗ {e}")
+        return 1
+    if backup is not None:
+        print(f"  previous save backed up to {backup}")
+    print(f"✓ imported into {app.dir / service.STATE_FILE}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="poketoken", description="PokeTokenBar for WSL — tokens → Pokémon")
     p.add_argument("--state-dir", type=Path, help="override the state directory")
@@ -491,13 +611,23 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("debug", help="scan roots, timings, raw companion state")
     nt = sub.add_parser("notify", help="desktop notifications: on | off | test | status")
     nt.add_argument("action", nargs="?", choices=["on", "off", "test", "status"], default="status")
+    tm = sub.add_parser("timer", help="systemd user timer running `refresh` every 15 min: on | off | status")
+    tm.add_argument("action", nargs="?", choices=["on", "off", "status"], default="status")
+    au = sub.add_parser("autostart", help="open the window at sign-in (Startup folder / XDG autostart): on | off | status")
+    au.add_argument("action", nargs="?", choices=["on", "off", "status"], default="status")
+    ex = sub.add_parser("export", help="write the save to a portable JSON file")
+    ex.add_argument("path", nargs="?", type=Path, help="file or directory (default ./poketoken-save-YYYY-MM-DD.json)")
+    im = sub.add_parser("import", help="install a save exported on another machine")
+    im.add_argument("path", type=Path, help="an export file")
+    im.add_argument("--replace", action="store_true", help="overwrite the current save (it is backed up first)")
     args = p.parse_args(argv)
 
     app = App(args.state_dir)
     handler = {"status": cmd_status, "watch": cmd_watch, "statusline": cmd_statusline, "refresh": cmd_refresh,
                "dex": cmd_dex, "shop": cmd_shop, "bag": cmd_bag, "pet": cmd_pet, "debug": cmd_debug,
                "history": cmd_history, "stats": cmd_stats, "card": cmd_card, "battle": cmd_battle,
-               "notify": cmd_notify,
+               "notify": cmd_notify, "timer": cmd_timer, "autostart": cmd_autostart,
+               "export": cmd_export, "import": cmd_import,
                "app": cmd_app, "window": cmd_app, "ui": cmd_app, "open": cmd_app,
                "close": cmd_close, "toggle": cmd_toggle, None: cmd_status}[args.cmd]
     return handler(app, args)

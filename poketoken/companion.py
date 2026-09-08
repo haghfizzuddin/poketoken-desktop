@@ -2,8 +2,8 @@
 `CompanionStore.swift` (ledger → egg incubation → hatch → evolve → graduate → Pokédex,
 plus the Shop and Bag).
 
-Not ported: Ditto disguise/reveal, Rare Candy grants from official limit windows
-(needs the claude.ai limits API), save-transfer envelopes. The JSON save uses upstream's
+Not ported: Rare Candy grants from official limit windows (needs the claude.ai limits API).
+Save transfer is `poketoken export` / `import` (service.py). The JSON save uses upstream's
 field names but is not byte-compatible with the macOS app's Codable output.
 """
 from __future__ import annotations
