@@ -20,6 +20,13 @@
 - Keyboard navigation, tooltips on icon-only controls, and no horizontal overflow at 360 px.
 - The footer no longer carries build information; it moved to About in the menu.
 
+### Added
+- **Buddy.** Pin any owned Pokémon to the home card from its species page or with
+  `poketoken buddy <name|#id>`; `--clear` goes back to following the companion. Display only —
+  the companion keeps growing underneath and the progress bar names it. Ownership is required,
+  so a pin cannot reveal an unseen species, and a pin to a species that later leaves the
+  Pokédex is dropped automatically.
+
 ### Fixed
 - On a narrow window the companion, its evolution, rewards and today's usage now share the first
   screen: the hero sprite is sized from the height left over after the other cards, between a

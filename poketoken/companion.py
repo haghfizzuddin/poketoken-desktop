@@ -309,6 +309,9 @@ class CompanionState:
     history_backfilled: bool = False
     encounters: list[dict] = field(default_factory=list)       # wild Pokémon log, newest last
     encounter_feature_seeded: bool = False
+    # the species pinned to the home card; None = follow whoever is being raised. Display only:
+    # it never changes what the companion is or how it grows.
+    representative_species_id: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -322,6 +325,7 @@ class CompanionState:
             "candyFeatureSeeded": self.candy_feature_seeded,
             "history": self.history, "historyBackfilled": self.history_backfilled,
             "encounters": self.encounters, "encounterFeatureSeeded": self.encounter_feature_seeded,
+            "representativeSpeciesID": self.representative_species_id,
         }
 
     @staticmethod
@@ -355,7 +359,26 @@ class CompanionState:
         s.history_backfilled = get("historyBackfilled", bool, False)
         s.encounters = [dict(e) for e in get("encounters", list, []) if isinstance(e, dict) and isinstance(e.get("species"), int)]
         s.encounter_feature_seeded = get("encounterFeatureSeeded", bool, False)
+        rep_id = d.get("representativeSpeciesID")
+        s.representative_species_id = int(rep_id) if isinstance(rep_id, int) and not isinstance(rep_id, bool) else None
         return s
+
+    def owns_species(self, sid: int) -> bool:
+        """Has the player ever held this species — a Pokédex record, or a form the companion has
+        already reached? Only these may be pinned, so a pin can never reveal an unseen species."""
+        if any(sid in e.chain_order for e in self.dex):
+            return True
+        a = self.active
+        return a is not None and sid in a.path_ids[: a.stage_index + 1]
+
+    def reconcile_representative(self) -> bool:
+        """Drop a pin for a species that is no longer owned (a released companion, a hand-edited
+        save). True when it changed."""
+        sid = self.representative_species_id
+        if sid is not None and not self.owns_species(sid):
+            self.representative_species_id = None
+            return True
+        return False
 
 
 # ------------------------------------------------------------------ the store
@@ -544,6 +567,7 @@ class Companion:
         if s.install_baseline_set:
             self.evaluate_candy_grants(today_date)
             self.evaluate_encounters(today_date)
+        s.reconcile_representative()
         if self.event_until is not None and self.clock() > self.event_until:
             self.just_graduated = self.just_evolved_to = None
             self.event_until = None
@@ -924,6 +948,62 @@ class Companion:
             grants.append({"key": week_key, "count": RARE_CANDY_WEEKLY_GRANT, "reason": "weekly goal reached"})
         return grants
 
+    # --------------------------------------------------------------- buddy
+    @property
+    def buddy_id(self) -> int | None:
+        """The species the home card shows: the pinned one, else whoever is being raised."""
+        sid = self.state.representative_species_id
+        if sid is not None and self.state.owns_species(sid):
+            return sid
+        a = self.state.active
+        return a.current_id if a else None
+
+    @property
+    def buddy_is_pinned(self) -> bool:
+        a = self.state.active
+        return self.buddy_id is not None and (a is None or self.buddy_id != a.current_id)
+
+    def buddy_name(self, sid: int | None = None) -> str:
+        """A pinned species' name from whichever record knows it (the dex stores the names it was
+        graduated or caught with, so this needs no network)."""
+        sid = self.buddy_id if sid is None else sid
+        if sid is None:
+            return "Token Egg"
+        a = self.state.active
+        if a is not None and sid == a.current_id and self.line:
+            return self.line.name(sid, self.state.language)
+        for e in self.state.dex:
+            if sid in e.chain_order:
+                name = e.name(sid, self.state.language)
+                if not name.startswith("#"):
+                    return name
+        if self.line:
+            return self.line.name(sid, self.state.language)
+        return f"#{sid}"
+
+    def set_buddy(self, sid: int | None) -> tuple[bool, str]:
+        """Pin a species you own to the home card, or clear the pin with None."""
+        if sid is None:
+            self.state.representative_species_id = None
+            self.save()
+            return True, "buddy cleared — the home card follows the Pokémon you are raising"
+        if not self.state.owns_species(sid):
+            return False, f"#{sid} is not in your Pokédex yet"
+        self.state.representative_species_id = int(sid)
+        self.save()
+        self._emit("buddy", species=int(sid), name=self.buddy_name(sid))
+        return True, f"{self.buddy_name(sid)} is now your buddy"
+
+    def owned_species(self) -> list[tuple[int, str]]:
+        """(id, name) for everything that may be pinned, in Pokédex order."""
+        ids: set[int] = set()
+        for e in self.state.dex:
+            ids.update(e.chain_order)
+        a = self.state.active
+        if a is not None:
+            ids.update(a.path_ids[: a.stage_index + 1])
+        return [(sid, self.buddy_name(sid)) for sid in sorted(ids)]
+
     # ---------------------------------------------------------- encounters
     def current_encounter(self, today: str | None = None) -> dict | None:
         today = today or self.today
@@ -1094,6 +1174,7 @@ class Companion:
                                   if self.line else None, released_at=_now_iso(), source="released"))
             s.active = None
             self.line = None
+        s.reconcile_representative()      # the released companion may have been the pinned one
         s.egg_usage = 0
         s.egg_tier = tier
         s.pending_hatch_id = None

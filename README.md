@@ -86,6 +86,7 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 | `poketoken refresh` | a single refresh tick (cron / systemd timers) |
 | `poketoken dex` · `shop` · `bag` | Pokédex, token shop (`--buy candy\|mint\|charm\|egg\|egg-uncommon\|egg-rare`), inventory (`--use candy\|mint`) |
 | `poketoken stats` | level, types, abilities, the six stats with IVs, and the luck behind them |
+| `poketoken buddy [name\|#id]` | pin an owned Pokémon to the home card (`--clear` to follow the one you are raising) |
 | `poketoken history -n 30` | daily usage table with the streak marker, streak and weekly goal |
 | `poketoken card [--trainer NAME]` | your battle card as a shareable token (`--json` for the raw card) |
 | `poketoken battle <card> [other]` | fight your Pokémon against a card, or spectate two cards |
@@ -113,6 +114,11 @@ red if a refresh failed — next to a Refresh control; on a narrow window the la
 the time and a refresh icon, both keeping their tooltips. Home leads with the companion, then
 its evolution track, then rewards, and only then telemetry: Cost by model and Tokens by project
 sit beside Today on a wide window and fold into a "Show details" disclosure on a narrow one.
+
+**Buddy.** Any Pokémon already in your Pokédex can be pinned to the home card from its species
+page, or with `poketoken buddy <name>`. It is a display choice only: the companion you are
+raising keeps growing underneath, and the card's progress bar says whose it is. A species you do
+not own cannot be pinned, so a pin can never reveal something you have not seen.
 
 **Responsive layout.** On a narrow window the companion's art gives up height so that it, the
 evolution track, rewards and today's usage all share the first screen: the sprite grows on a

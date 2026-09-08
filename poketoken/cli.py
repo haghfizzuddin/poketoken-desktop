@@ -354,6 +354,45 @@ def cmd_encounter(app: App, args) -> int:
     return 0
 
 
+def cmd_buddy(app: App, args) -> int:
+    """Show, set or clear the species pinned to the home card."""
+    app.tick()
+    c = app.companion
+    if args.clear:
+        ok, msg = c.set_buddy(None)
+        print(("✓ " if ok else "✗ ") + msg)
+        return 0 if ok else 1
+    if args.who:
+        owned = c.owned_species()
+        want = args.who.strip().lstrip("#")
+        match = [(sid, name) for sid, name in owned
+                 if (want.isdigit() and sid == int(want)) or name.lower() == want.lower()]
+        if not match:                                     # then try a prefix, so "pidg" works
+            match = [(sid, name) for sid, name in owned if name.lower().startswith(want.lower())]
+        if not match:
+            print(f"✗ no owned Pokémon matches {args.who!r}")
+            print("   owned: " + ", ".join(f"{name} (#{sid})" for sid, name in owned) if owned else "   your Pokédex is empty")
+            return 1
+        if len(match) > 1:
+            print("✗ that matches several: " + ", ".join(f"{n} (#{i})" for i, n in match))
+            return 1
+        ok, msg = c.set_buddy(match[0][0])
+        print(("✓ " if ok else "✗ ") + msg)
+        return 0 if ok else 1
+    buddy = c.buddy_id
+    if buddy is None:
+        print("No Pokémon yet — the egg is on the home card.")
+    elif c.buddy_is_pinned:
+        print(f"Buddy: {c.buddy_name()} (#{buddy}) — pinned. Raising {c.display_name()} underneath.")
+    else:
+        print(f"Buddy: {c.buddy_name()} (#{buddy}) — the Pokémon you are raising (nothing pinned).")
+    owned = c.owned_species()
+    if owned:
+        print("Owned: " + ", ".join(f"{name} (#{sid})" for sid, name in owned))
+        print("\npin with:  poketoken buddy <name|#id>   ·   clear with:  poketoken buddy --clear")
+    return 0
+
+
 def cmd_dex(app: App, args) -> int:
     s = app.companion.state
     if not s.dex:
@@ -620,6 +659,9 @@ def main(argv: list[str] | None = None) -> int:
     hi = sub.add_parser("history", help="daily usage table, streak and weekly goal")
     hi.add_argument("-n", "--days", type=int, default=30)
     sub.add_parser("stats", help="level, types, abilities and stats of your current Pokémon")
+    bd = sub.add_parser("buddy", help="pin an owned Pokémon to the home card")
+    bd.add_argument("who", nargs="?", help="name or #id of a Pokémon in your Pokédex")
+    bd.add_argument("--clear", action="store_true", help="follow the Pokémon you are raising again")
     en = sub.add_parser("encounter", help="the wild Pokémon waiting for you, if any")
     en.add_argument("--throw", nargs="?", const="", metavar="BALL", help="throw your best ball, or ball|greatball|ultraball")
     cd = sub.add_parser("card", help="print your battle card to share with a colleague")
@@ -667,7 +709,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = {"status": cmd_status, "watch": cmd_watch, "statusline": cmd_statusline, "refresh": cmd_refresh,
                "dex": cmd_dex, "shop": cmd_shop, "bag": cmd_bag, "pet": cmd_pet, "debug": cmd_debug,
                "history": cmd_history, "stats": cmd_stats, "card": cmd_card, "battle": cmd_battle,
-               "encounter": cmd_encounter,
+               "encounter": cmd_encounter, "buddy": cmd_buddy,
                "notify": cmd_notify, "timer": cmd_timer, "autostart": cmd_autostart,
                "export": cmd_export, "import": cmd_import,
                "app": cmd_app, "window": cmd_app, "ui": cmd_app, "open": cmd_app,

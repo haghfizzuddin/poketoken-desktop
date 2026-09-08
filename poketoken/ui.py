@@ -162,6 +162,12 @@ def resolve_sprites(app, extra: tuple = ()) -> dict:
             wanted.add((sid, e.is_shiny))
     for sid, shiny in wanted:
         out[("static", sid, shiny)] = api.sprite(sid, animated=False, shiny=shiny)
+    buddy = app.companion.buddy_id
+    if buddy is not None:
+        b_shiny = any(e.is_shiny and buddy in e.chain_order for e in s.dex) or bool(
+            a and a.shiny_visible and buddy in a.path_ids[: a.stage_index + 1])
+        out[("anim", buddy, b_shiny)] = api.sprite(buddy, animated=True, shiny=b_shiny)
+        out[("static", buddy, b_shiny)] = api.sprite(buddy, animated=False, shiny=b_shiny)
     enc = app.companion.current_encounter()
     if enc:
         out[("static", enc["species"], bool(enc.get("shiny")))] = api.sprite(enc["species"], animated=False, shiny=bool(enc.get("shiny")))
@@ -439,6 +445,8 @@ class PokeWindow:
             return "A new egg arrived"
         if k == "mint":
             return f"Nature is now {str(ev.get('nature', '')).title()}"
+        if k == "buddy":
+            return f"{ev.get('name')} is now your buddy"
         if k == "candy":
             return f"+{ev.get('count')} Rare Candy · {ev.get('reason')}"
         if k == "dittoReveal":
@@ -513,6 +521,13 @@ class PokeWindow:
         """Version and data source — the implementation detail the footer no longer carries."""
         from . import __version__
         self._toast(f"PokeToken {__version__} · reads Claude Code logs · {self.app.dir}", seconds=8)
+        self.render()
+
+    def _set_buddy(self, sid: int | None) -> None:
+        ok, msg = self.app.companion.set_buddy(sid)
+        self.app.companion.drain_events()
+        self._toast(msg if ok else "✕ " + msg)
+        self.refresh()          # the buddy's sprite may not be on disk yet
         self.render()
 
     def _act(self, tag: str) -> None:
@@ -862,13 +877,19 @@ class PokeWindow:
         text = getattr(self, "_tip_text", "")
         if not text:
             return
-        t = self._tip = tk.Toplevel(self.root)
-        t.overrideredirect(True)
-        t.attributes("-topmost", True)
-        tk.Label(t, text=text, fg=self.P["card"], bg=self.P["label"], font=self.F["caption"],
-                 padx=8, pady=4).pack()
-        self.root.update_idletasks()
-        t.geometry(f"+{self.root.winfo_pointerx() + 12}+{self.root.winfo_pointery() + 18}")
+        try:
+            t = self._tip = tk.Toplevel(self.root)
+            t.overrideredirect(True)
+            t.attributes("-topmost", True)
+            tk.Label(t, text=text, fg=self.P["card"], bg=self.P["label"], font=self.F["caption"],
+                     padx=8, pady=4).pack()
+            self.root.update_idletasks()
+            # update_idletasks can run a dismissal (a click, the pointer leaving) that destroys
+            # this very window, so place it only if it is still ours and still alive
+            if self.__dict__.get("_tip") is t and t.winfo_exists():
+                t.geometry(f"+{self.root.winfo_pointerx() + 12}+{self.root.winfo_pointery() + 18}")
+        except tk.TclError:
+            self.__dict__.pop("_tip", None)
 
     def _hide_tip(self) -> None:
         t = self.__dict__.pop("_tip", None)
@@ -957,12 +978,13 @@ class PokeWindow:
         return self._natural[key]
 
     def _hero_path(self):
-        s = self.app.companion.state
+        comp = self.app.companion
         paths = (self.payload or {}).get("paths", {})
-        if s.active is None:
+        sid = comp.buddy_id
+        if sid is None:
             return paths.get("egg")
-        return (paths.get(("anim", s.active.current_id, s.active.shiny_visible))
-                or paths.get(("static", s.active.current_id, s.active.shiny_visible)))
+        shiny = self._species_shiny(sid)
+        return paths.get(("anim", sid, shiny)) or paths.get(("static", sid, shiny))
 
     def _hero_chrome(self) -> float:
         """The hero card's height without the sprite: name, pills, the progress rows, padding."""
@@ -994,7 +1016,9 @@ class PokeWindow:
         budget = vh - getattr(self, "content_top", 90) - self._footer_h() - others - self._hero_chrome()
         room = max(nat, min(size, budget) - 2 * art_pad)      # art space the card can spare
         scale = max(1, int(room // nat))
-        return int(nat * scale + 2 * art_pad)
+        # a sprite wider than the card would push the box past it: the card wins, the art is
+        # scaled down to fit rather than allowed to overflow
+        return int(min(nat * scale + 2 * art_pad, cw - 2 * pad))
 
     def draw_hero(self, y, x0, cw) -> int:
         """The companion: the largest thing on the page at every width. The sprite container is
@@ -1008,17 +1032,21 @@ class PokeWindow:
         card = self.card(x0, y, cw, 10, tags=hero_tag)
         cy = y + pad - 4
         size = self.sprite_draw_box = self._hero_sprite(cw)
-        self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
+        buddy = comp.buddy_id
+        pinned = comp.buddy_is_pinned
+        self.sprite_subject = ("egg",) if buddy is None else ("mon", buddy, self._species_shiny(buddy))
         self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="", tags=hero_tag)
         if s.active:
-            self.c.tag_bind("hero", "<Button-1>", lambda e: self.open_stats())
+            self.c.tag_bind("hero", "<Button-1>", lambda e, sid=buddy: self.open_species(sid, "home"))
             self._hand("hero")
             self.text(x0 + cw - pad, y + pad - 4, "Stats ›", "captionB", "blue", anchor="ne", tags=hero_tag)
             self._tooltip("hero", "Open this Pokémon's stats")
+        if pinned:
+            self.text(x0 + pad, y + pad - 4, "BUDDY", "captionB", "teal", tags=hero_tag)
         cy += size + 2
-        name = comp.display_name()
+        name = comp.buddy_name() if buddy is not None else comp.display_name()
         name_font = "title" if self.measure(name, "title") < cw - 2 * pad - 24 else "title2"
-        if s.active and s.active.shiny_visible:
+        if buddy is not None and self._species_shiny(buddy):
             tw = self.measure(name, name_font) + 6 + self.measure("✦", "title2")
             self.text(x0 + cw / 2 - tw / 2, cy, name, name_font, "label", anchor="nw")
             self.text(x0 + cw / 2 + tw / 2, cy + 3, "✦", "title2", "yellow", anchor="ne")
@@ -1029,7 +1057,7 @@ class PokeWindow:
         if s.active:
             a = s.active
             pills.append((a.rarity.title(), RARITY_COLOR[a.rarity]))
-            if a.nature and not self.narrow:
+            if a.nature and not self.narrow and not pinned:
                 pills.append((a.nature.title(), "teal"))
         pills.append((STATE_LABEL.get(state, state), accent))
         total = sum(self.measure(t, "captionB") + 16 for t, _ in pills) + 6 * (len(pills) - 1)
@@ -1038,7 +1066,9 @@ class PokeWindow:
             px += self.pill(px, cy, t, colr) + 6
         cy += 26 if self.narrow else 30
         if s.active:
-            left = f"Stage {s.active.stage_index + 1} of {s.active.total_forms}"
+            # while a buddy is pinned the bar still tracks the companion, so say whose it is
+            left = (f"Raising {comp.display_name()}" if pinned
+                    else f"Stage {s.active.stage_index + 1} of {s.active.total_forms}")
             frac = comp.progress
             used, goal = s.active.used_at_stage, comp.threshold
         else:
@@ -1552,6 +1582,19 @@ class PokeWindow:
             for t in view["types"]:
                 px += self.pill(px, ty, t.title(), TYPE_COLORS.get(t, "gray")) + 6
             ty += 26
+        # the pin button is placed first so the caption below can stop short of it
+        pin_left = x0 + cw - self.pad
+        if s.owns_species(sid):
+            bh = button_height(self.vw)
+            is_buddy = s.representative_species_id == sid
+            label = "Unpin" if is_buddy else "Pin as buddy"
+            bw = max(96, self.measure(label, "captionB") + 26)
+            pin_left = x0 + cw - self.pad - bw
+            self._battle_button(pin_left, y + h - bh - 10, bw, bh, label, "buddy:toggle",
+                                (lambda t=sid, on=not is_buddy: self._set_buddy(t if on else None)),
+                                "tinted" if is_buddy else "filled")
+            self._tooltip("buddy:toggle", "Go back to showing the Pokémon you are raising" if is_buddy
+                          else "Show this Pokémon on the home card")
         tail = []
         if is_current:
             tail.append(f"stage {a.stage_index + 1} of {a.total_forms}")
@@ -1566,7 +1609,8 @@ class PokeWindow:
         if shiny:
             tail.append("shiny")
         if tail:
-            self.text(tx, ty, self._ellipsize(" · ".join(tail), "caption", cw - MINI_BOX - 50), "caption", "secondary")
+            self.text(tx, ty, self._ellipsize(" · ".join(tail), "caption", max(60, pin_left - tx - 10)),
+                      "caption", "secondary")
         y += h + 10
 
         failed = sid in (self.payload or {}).get("meta_failed", set()) and not self.busy and not self.refresh_again
@@ -2258,7 +2302,8 @@ class PokeWindow:
         accent = STATE_COLOR.get(state, "blue")
         size = self.sprite_draw_box = self.sprite_box
         y = 10
-        self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
+        buddy = comp.buddy_id
+        self.sprite_subject = ("egg",) if buddy is None else ("mon", buddy, self._species_shiny(buddy))
         self.sprite_item = self.c.create_image(w / 2, y + size / 2, image="")
         y += size
         name = comp.display_name()

@@ -215,7 +215,8 @@ card_file = scratch / "card.txt"
 for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], ["stats"], ["encounter"],
              ["encounter", "--throw"], ["encounter", "--throw", "ultraball"], ["shop", "--buy", "ball"], ["bag", "--use", "ball"],
              ["dex"], ["shop"],
-             ["card", "--trainer", "Audit"], ["card", "--json"], ["shop", "--buy", "mint"],
+             ["card", "--trainer", "Audit"], ["card", "--json"], ["buddy"], ["buddy", "Pidgeot"],
+             ["buddy", "#18"], ["buddy", "nosuchmon"], ["buddy", "--clear"], ["shop", "--buy", "mint"],
              ["shop", "--buy", "egg-rare"], ["bag"], ["bag", "--use", "candy"], ["bag", "--use", "mint"],
              ["bag", "--use", "bogus"], ["debug"], []):
     rc, out = quiet(cli.main, base + argv)
@@ -462,6 +463,13 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win.render(); grab(win, "win-rich-stats")
         win.close_stats(); win.open_stats(); win.open_board()                        # "Pokédex ›" → the board
         win.open_species(18); win.root.update()                                     # a graduated record's page
+        win._set_buddy(18); win.set_tab("home"); win.render()                       # pinned buddy on Home
+        t0 = time.time()
+        while (win.busy or win.refresh_again) and time.time() - t0 < 20:
+            win.root.update(); time.sleep(0.05)
+        win.render(); grab(win, "win-rich-buddy")
+        win._set_buddy(999999); win._set_buddy(None)                                # rejected, then cleared
+        win.open_species(18); win.root.update()
         win._escape()                                                               # backs out of the page, does not quit
         win.open_species(18); win.root.update()
         t0 = time.time()
