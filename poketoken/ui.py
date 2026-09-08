@@ -1690,7 +1690,11 @@ class PokeWindow:
                  (lambda t=sid, on=not is_fighter: self._set_fighter(t if on else None)),
                  "This one already fights for you" if is_fighter else "Field this Pokémon in battles")]
         if can_raise or comp.raisable_record(sid) is not None:
-            acts.append(("raise:one", "Raise this one", "filled" if can_raise else "disabled",
+            # when it is only the price standing in the way, say so on the button rather than
+            # leaving a control that looks pressable and silently is not (the Shop does the same)
+            short = C.FRESH_EGG_PRICE - comp.wallet
+            label = "Raise this one" if can_raise else (f"{fmt.compact(short)} short" if short > 0 else "Raise this one")
+            acts.append(("raise:one", label, "filled" if can_raise else "disabled",
                          (lambda t=sid: self._raise_caught(t)),
                          why or (f"Make it your companion for {fmt.compact(C.FRESH_EGG_PRICE)} tokens"
                                  + (f"; {comp.display_name()} is released" if comp.state.active else ""))))
