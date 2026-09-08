@@ -118,3 +118,49 @@ class BehaviourTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProgressWhilePinnedTests(unittest.TestCase):
+    """What a pin does and does not do to growth."""
+
+    def _hatched(self):
+        comp, api, _, _ = make(rng_seed=4)
+        p = U.PROVIDER_ID
+        comp.update({p: 10 * M}, "2026-09-08")
+        comp.state.pending_hatch_id = 16               # Pidgey: 3 forms, so it can evolve twice
+        comp.update({p: 16 * M}, "2026-09-08")
+        comp.drain_events()
+        return comp, p
+
+    def test_the_companion_keeps_evolving_while_a_buddy_is_pinned(self):
+        comp, p = self._hatched()
+        comp.state.dex = [dex_entry(25, 25, [25], "Pikachu", wild=True)]
+        comp.set_buddy(25)
+        start = comp.state.active.current_id
+        thr = C.phase_threshold(comp.state.active.rarity, comp.state.active.total_forms, 0)
+        comp.update({p: 16 * M + thr + 2 * M}, "2026-09-08")
+        self.assertNotEqual(comp.state.active.current_id, start, "the companion evolved")
+        self.assertEqual(comp.state.representative_species_id, 25, "the pin did not move")
+        self.assertEqual(comp.buddy_name(), "Pikachu")
+        self.assertTrue(comp.buddy_is_pinned)
+
+    def test_a_pinned_record_does_not_grow(self):
+        comp, p = self._hatched()
+        rec = dex_entry(25, 25, [25], "Pikachu", wild=True)
+        rec.level = 22
+        comp.state.dex = [rec]
+        comp.set_buddy(25)
+        comp.update({p: 500 * M}, "2026-09-09")
+        self.assertEqual(comp.state.dex[0].level, 22, "a Pokédex record is a snapshot, it never levels")
+        self.assertEqual(comp.state.dex[0].chain_order, [25], "and it never evolves")
+
+    def test_pinning_a_form_the_companion_passes_freezes_the_art_there(self):
+        comp, p = self._hatched()
+        first = comp.state.active.current_id
+        comp.set_buddy(first)                          # pin the form it is on right now
+        self.assertFalse(comp.buddy_is_pinned, "pinning the current form just follows it")
+        thr = C.phase_threshold(comp.state.active.rarity, comp.state.active.total_forms, 0)
+        comp.update({p: 16 * M + thr + 2 * M}, "2026-09-08")
+        self.assertNotEqual(comp.state.active.current_id, first)
+        self.assertEqual(comp.buddy_id, first, "the card stays on the pinned form")
+        self.assertTrue(comp.buddy_is_pinned, "and now reads as pinned, so the freeze is visible")
