@@ -87,6 +87,10 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 | `poketoken card [--trainer NAME]` | your battle card as a shareable token (`--json` for the raw card) |
 | `poketoken battle <card> [other]` | fight your Pokémon against a card, or spectate two cards |
 | `poketoken notify on\|off\|test\|status` | desktop notifications for hatch / evolve / graduate / candy / egg |
+| `poketoken timer on\|off\|status` | systemd user timer that runs `refresh` every 15 minutes while the window is closed (WSL, Linux) |
+| `poketoken autostart on\|off\|status` | open the window at sign-in: Windows Startup folder (WSL, Windows) or XDG autostart (Linux) |
+| `poketoken export [path]` | write the save to a portable JSON file (default `./poketoken-save-YYYY-MM-DD.json`) |
+| `poketoken import <file> [--replace]` | install an exported save; `--replace` overwrites the current one after backing it up |
 | `poketoken debug` | scan roots, timings, raw save |
 
 Window flags: `--dark` / `--light`, `--compact`, `-i SECONDS` (refresh, default 30).
@@ -107,6 +111,42 @@ Future forms in the evolution line are shown blurred and sharpen as you approach
 Append its output to your status-line script and the companion lives in Claude Code's footer.
 Every call is also a refresh tick, so the game advances even with the window closed.
 
+### Keep it running
+
+Progress is credited on refresh ticks (window, status line, any CLI call). With the window closed
+and no ticks, streak days, Rare Candy grants and hatching wait, and tokens burned after the day's
+last tick are never credited once the date rolls over. `timer` closes that gap; `autostart` brings
+the window back after every sign-in:
+
+```bash
+poketoken timer on          # systemd user timer: `poketoken refresh` 2 min after login, then every 15 min
+poketoken timer status      # units, last/next run, last output;  `timer off` removes them
+poketoken autostart on      # open the window at sign-in;  `autostart off` / `autostart status`
+```
+
+`timer` writes `poketoken-refresh.service` / `.timer` to `~/.config/systemd/user/` (pointing at
+this checkout and interpreter) and enables them; it needs a systemd user session
+(`systemctl --user is-system-running` → `running`, the default on Ubuntu WSL with systemd on).
+Without one it prints a crontab line to paste instead. `autostart` drops a `PokeToken.vbs` in the
+Windows Startup folder — under WSL it runs `wsl.exe -d <distro> -- bash -lc "$HOME/.local/bin/poketoken app"`
+hidden, on native Windows it starts the interpreter directly — or `~/.config/autostart/poketoken.desktop`
+on a Linux desktop. Both are plain files you can read, and `off` removes exactly what `on` wrote.
+
+### Move your save
+
+```bash
+poketoken export                         # ./poketoken-save-2026-09-08.json (a path or directory is optional)
+poketoken import poketoken-save-2026-09-08.json            # into an empty state dir
+poketoken import poketoken-save-2026-09-08.json --replace  # over an existing save
+```
+
+The export is a JSON envelope (`format`, `version`, `exportedAt`, `host`, `state`) around
+`state.json`. `import` shows a one-line summary of the current and the incoming save, refuses to
+overwrite without `--replace`, backs the old save up to `state.json.bak-<timestamp>` first, writes
+atomically and checks that the result loads. Close the window before importing
+(`poketoken close`): a running window would save over the import on its next refresh, so `import`
+refuses while one is open.
+
 ## Where things live
 
 `~/.local/share/poketoken/` (`%LOCALAPPDATA%\poketoken` on Windows; override with
@@ -114,7 +154,7 @@ Every call is also a refresh tick, so the game advances even with the window clo
 
 | path | what |
 |---|---|
-| `state.json` | the save — upstream's field names (`usedSinceInstall`, `eggUsage`, `active`, `dex`, …) plus `history` (120 days of daily usage) |
+| `state.json` | the save — upstream's field names (`usedSinceInstall`, `eggUsage`, `active`, `dex`, …) plus `history` (120 days of daily usage); `state.json.bak-*` are backups made by `import --replace` |
 | `events.log` | hatch / evolve / graduate / shop events and errors |
 | `sprites/`, `cache/` | PokéAPI sprites and responses (species and lines forever, base index 30 days) |
 | `ui.json`, `app.pid`, `app.log` | window size/appearance, running-instance pid, background log |
@@ -150,8 +190,9 @@ the backend. Output of the backend lands in `notify.log`.
 
 Official 5-hour / weekly limit gauges (needs the claude.ai limits API with your OAuth token;
 the Rare Candy grants they used to trigger come from streaks and the weekly goal instead),
-the other 11 CLI providers, save transfer, UI translations. The save uses upstream's field names but is not
-byte-compatible with the macOS app's Codable output.
+the other 11 CLI providers, UI translations. The save uses upstream's field names but is not
+byte-compatible with the macOS app's Codable output, so `export` / `import` move saves between
+poketoken-desktop installs only.
 
 ## Development
 

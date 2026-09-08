@@ -238,6 +238,96 @@ for argv in (["notify"], ["notify", "status"], ["notify", "off"], ["notify", "on
 for argv in (["dex"], ["bag"], ["stats"], ["card"], ["battle", str(card_file)], ["encounter"], ["encounter", "--throw"]):
     rc, out = quiet(cli.main, ["--state-dir", str(egg_dir)] + argv)
     print(f" egg-state {argv[0]:<12} rc={rc} {out.strip()[:60]}")
+# timer / autostart / export / import — systemctl, cmd.exe and wslpath are mocked; autostart and unit
+# targets live under scratch; imports go into a copy of the egg state, never the user's save
+section("service: timer / autostart / export / import (mocked system, scratch targets)")
+import subprocess  # noqa: E402
+from pathlib import PosixPath  # noqa: E402
+from unittest import mock  # noqa: E402
+from poketoken import instance, service  # noqa: E402
+svc_calls: list[list[str]] = []
+def fake_run(argv, **kw):
+    argv = list(argv); svc_calls.append(argv); out = ""
+    if argv[:3] == ["systemctl", "--user", "is-system-running"]:
+        out = "running\n"
+    elif argv[:3] == ["systemctl", "--user", "show"]:
+        out = ("LoadState=loaded\nActiveState=active\nLastTriggerUSec=Mon 2026-09-07 18:48:36 +08\n"
+               "NextElapseUSecRealtime=Mon 2026-09-07 19:03:36 +08\nResult=success\n")
+    elif argv[:1] == ["journalctl"]:
+        out = "2026-09-07 today=1 state=idle files=1 events=0\n"
+    elif argv[:1] == ["cmd.exe"]:
+        out = "C:\\Users\\audit\\AppData\\Roaming\r\n"
+    elif argv[:1] == ["wslpath"]:
+        out = f"{scratch / 'appdata'}\n"
+    return subprocess.CompletedProcess(argv, 0, out, "")
+unit_dir = scratch / "systemd-user"
+with mock.patch.object(service.subprocess, "run", fake_run), mock.patch.object(service.shutil, "which", lambda n: f"/usr/bin/{n}"), \
+     mock.patch.object(service, "systemd_user_dir", lambda: unit_dir), \
+     mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(scratch / "xdg"), "WSL_DISTRO_NAME": "Ubuntu"}):
+    for argv in (["timer"], ["timer", "on"], ["timer", "status"], ["timer", "off"], ["timer", "off"]):
+        rc, out = quiet(cli.main, base + argv)
+        print(f" {' '.join(argv):<22} rc={rc} {out.strip().splitlines()[0][:70]}")
+        if rc != 0:
+            problems.append(f"cli {' '.join(argv)} rc={rc}")
+    if list(unit_dir.glob("poketoken-*")):
+        problems.append("timer off left unit files behind")
+    with mock.patch.object(service, "has_systemd_user", lambda: False):
+        rc, out = quiet(cli.main, base + ["timer", "on"])
+        print(f" timer on (no systemd)   rc={rc} {out.strip().splitlines()[-1][:70]}")
+        if rc != 1 or "*/15 * * * *" not in out:
+            problems.append("timer without systemd should print the cron line and return 1")
+    for flavour, wsl in (("wsl", True), ("linux", False)):
+        with mock.patch.object(service, "is_wsl", lambda wsl=wsl: wsl):
+            kind, target = service.autostart_target()
+            if kind != flavour:
+                problems.append(f"autostart flavour {kind!r}, expected {flavour!r}")
+            for argv in (["autostart"], ["autostart", "on"], ["autostart", "status"], ["autostart", "off"], ["autostart", "off"]):
+                rc, out = quiet(cli.main, base + argv)
+                print(f" {' '.join(argv):<22} rc={rc} [{kind}] {out.strip()[:60]}")
+                if rc != 0:
+                    problems.append(f"cli {' '.join(argv)} [{kind}] rc={rc}")
+            if target.exists():
+                problems.append(f"autostart off left {target}")
+    # native Windows branch: os.name patched, so pathlib needs an explicit class; pure functions only
+    with mock.patch.object(service.os, "name", "nt"), mock.patch.object(service, "Path", PosixPath), \
+         mock.patch.dict(os.environ, {"APPDATA": str(scratch / "appdata")}):
+        kind, target = service.autostart_target()
+        text = service.autostart_text(kind, rich, python="C:/Python311/pythonw.exe", root=PosixPath("C:/poketoken-desktop"))
+        service.autostart_on(target, text); service.autostart_off(target)
+        print(f" autostart [{kind}]        {target.name} {'ok' if 'pythonw.exe' in text and not target.exists() else 'BAD'}")
+        print(f" cron hint [{kind}]        {service.cron_hint(rich)[:60]}")
+        assert not service.has_systemd_user()
+    with mock.patch.object(service, "is_wsl", lambda: True), mock.patch.object(service.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no interop"))):
+        rc, out = quiet(cli.main, base + ["autostart", "on"])
+        print(f" autostart on (no interop) rc={rc} {out.strip()[:60]}")
+        if rc != 1:
+            problems.append("autostart without cmd.exe should return 1")
+print(f" {len(svc_calls)} mocked system call(s); real systemd user session here: {service.has_systemd_user()}; "
+      f"real unit dir (untouched): {service.systemd_user_dir()}")
+exp = scratch / "export.json"
+imp_dir = scratch / "state-import"
+shutil.copytree(egg_dir, imp_dir)
+(scratch / "bad-format.json").write_text('{"format": "nope", "version": 1, "state": {}}')
+(scratch / "bad-json.json").write_text("{")
+for sdir, argv, want in ((rich, ["export", str(exp)], 0), (rich, ["export", str(scratch)], 0),
+                         (imp_dir, ["import", str(exp)], 1), (imp_dir, ["import", str(exp), "--replace"], 0),
+                         (scratch / "state-fresh", ["import", str(exp)], 0),
+                         (imp_dir, ["import", str(scratch / "nope.json")], 1), (imp_dir, ["import", str(scratch / "bad-format.json")], 1),
+                         (imp_dir, ["import", str(scratch / "bad-json.json")], 1)):
+    rc, out = quiet(cli.main, ["--state-dir", str(sdir)] + argv)
+    print(f" {argv[0]} {Path(argv[1]).name:<18}{' --replace' if '--replace' in argv else '':<10} rc={rc} {out.strip().splitlines()[-1][:60]}")
+    if rc != want:
+        problems.append(f"cli {' '.join(argv)} rc={rc}, expected {want}")
+if not list(imp_dir.glob("state.json.bak-*")):
+    problems.append("import --replace made no backup")
+if json.loads((imp_dir / "state.json").read_text()) != json.loads(exp.read_text())["state"]:
+    problems.append("import --replace did not install the exported state")
+instance.write_pid(imp_dir)
+rc, out = quiet(cli.main, ["--state-dir", str(imp_dir), "import", str(exp), "--replace"])
+instance.clear_pid(imp_dir)
+print(f" import (window running)      rc={rc} {out.strip().splitlines()[-1][:60]}")
+if rc != 1 or "poketoken close" not in out:
+    problems.append("import with a running window should refuse and hint `poketoken close`")
 # watch: one iteration then Ctrl-C
 saved_sleep, saved_system = cli.time.sleep, cli.os.system
 cli.time.sleep = lambda s: (_ for _ in ()).throw(KeyboardInterrupt())
