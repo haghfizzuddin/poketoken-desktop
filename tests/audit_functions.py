@@ -42,7 +42,7 @@ def tracer(frame, event, arg):
 sys.settrace(tracer)
 threading.settrace(tracer)
 
-from poketoken import cli, companion as C, fmt, notify, pokeapi, pricing, ui, usage as U  # noqa: E402
+from poketoken import battle as B, battle_ui as BU, cli, companion as C, fmt, notify, pokeapi, pricing, ui, usage as U  # noqa: E402
 
 M = 1_000_000
 problems: list[str] = []
@@ -288,7 +288,7 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win.root.update(); time.sleep(0.05)
     if win.payload is None:
         problems.append(f"window[{label}] never received a payload")
-    for tab in ("home", "dex", "shop", "bag"):
+    for tab in ("home", "dex", "shop", "bag", "battle"):
         win.set_tab(tab); win.root.update()
         if not win.c.find_all():
             problems.append(f"window[{label}] tab {tab} drew nothing")
@@ -300,6 +300,44 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win.set_tab("bag"); win._act("use:rareCandy"); win._act("use:rareCandy")
         win._act("use:mint"); win._act("use:mint")
         win._act("bogus:x"); win._act("bogus:x")
+        # battle tab: copy my card, paste it back, fight a doctored rival to the end, skip a rematch, bad card, clear
+        win.set_tab("battle"); win.root.update()
+        win._battle_copy(); win.root.update()                                  # PT1 token → clipboard
+        win._battle_paste(); win.root.update()                                 # clipboard → field → my own card
+        mine = win._battle_my_card()
+        if mine is None:
+            problems.append("battle: no card for the active Pokémon")
+        else:
+            rival = dict(mine, name="Rival", trainer="Audit", species=4, types=["fire"], shiny=False)
+            rival["stats"] = dict(mine["stats"], hp=mine["stats"]["hp"] * 2)
+            win._battle_load(B.encode_card(rival))
+            t0 = time.time()
+            while (win.busy or win.refresh_again) and time.time() - t0 < 20:  # the challenger's sprite
+                win.root.update(); time.sleep(0.05)
+            win._battle_start()
+            bs = win._battle()
+            t0 = time.time()
+            while (bs.pending or bs.job) and time.time() - t0 < 60:           # type chart, then hit by hit
+                win.root.update(); time.sleep(0.03)
+            grab(win, "win-rich-battle")
+            if bs.result is None or not bs.finished:
+                problems.append("battle: the fight did not finish")
+            if len(BU.load_history(rich_ui)) != 1:
+                problems.append("battle: battles.json not written")
+            win._battle_start()                                                # rematch, skipped mid-fight
+            t0 = time.time()
+            while bs.pending and time.time() - t0 < 30:
+                win.root.update(); time.sleep(0.03)
+            win._battle_finish(); win.root.update()
+            if len(BU.load_history(rich_ui)) != 2:
+                problems.append("battle: skipped fight not recorded")
+            win._battle_load("PT1.not-a-card")                                 # inline error path
+            if not bs.error or bs.challenger is not None:
+                problems.append("battle: bad card gave no inline error")
+            win._battle_clear(); win.root.update()
+        win.set_tab("home"); win.root.update()
+        if win.battle_entry.winfo_ismapped():
+            problems.append("battle: paste field lingers on Home")
         for ev in ({"kind": "hatch", "name": "A", "shiny": True}, {"kind": "evolve", "name": "B"},
                    {"kind": "graduate", "name": "C"}, {"kind": "buy", "item": "mint"}, {"kind": "egg"},
                    {"kind": "mint", "nature": "bold"}, {"kind": "dittoReveal", "disguise": "Pidgey", "shiny": True},
