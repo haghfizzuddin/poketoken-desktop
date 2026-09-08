@@ -238,7 +238,9 @@ class BattleState:
     """Everything the Battle tab remembers between renders."""
     challenger: dict | None = None      # the pasted card, once it decodes
     error: str = ""                     # inline message under the paste field
-    mine: dict | None = None            # my card as it stood when the fight started
+    mine: dict | None = None            # my card as fielded (scaled to the fight's level)
+    other: dict | None = None           # the challenger as fielded
+    flat: bool = True                   # scale both to one level for the fight
     result: dict | None = None          # battle.simulate() output
     schedule: list = field(default_factory=list)
     step: int = 0                       # index into schedule the arena currently shows
@@ -255,7 +257,7 @@ class BattleState:
 
     def reset_fight(self) -> None:
         """Forget the current fight (new card, Clear); the challenger and the record stay."""
-        self.mine = self.result = None
+        self.mine = self.other = self.result = None
         self.schedule, self.step, self.pending, self.recorded = [], 0, False, False
         while True:
             try:

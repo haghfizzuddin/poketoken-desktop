@@ -304,8 +304,13 @@ def cmd_card(app: App, args) -> int:
         print(json.dumps(card, indent=1))
         return 0
     a = app.companion.state.active
-    origin = ("the Pokémon you are raising" if a and card["species"] == a.current_id
-              else "from your Pokédex, fielded at level 100")
+    if a and card["species"] == a.current_id:
+        origin = "the Pokémon you are raising"
+    else:
+        entry = next((e for e in app.companion.state.dex if e.final_id == card["species"]), None)
+        how = {"wild": "caught wild", "released": "released part-way"}.get(
+            entry.source if entry else "", "graduated") if entry else "from your Pokédex"
+        origin = f"from your Pokédex · {how} · Lv {card['level']}"
     print(B.card_summary(card))
     print(f"power {B.power_score(card)} · {origin}\n")
     print(B.encode_card(card))
@@ -331,8 +336,14 @@ def cmd_battle(app: App, args) -> int:
     except ValueError as e:
         print(f"✗ {e}")
         return 1
-    res = B.simulate(card_a, card_b, chart)
-    print(f"{B.card_summary(card_a)}\n    vs\n{B.card_summary(card_b)}\n")
+    flat = not args.raw
+    fa, fb = B.fielded(card_a, card_b, flat)
+    res = B.simulate(fa, fb, chart)
+    mode = (f"both fielded at Lv {B.FLAT_LEVEL} — species, IVs, nature and types decide it"
+            if flat else "raw levels — each fights at its own level")
+    print(f"{B.card_summary(fa)}\n    vs\n{B.card_summary(fb)}\n({mode})\n")
+    if flat and (fa.get("approx") or fb.get("approx")):
+        print("note: an older card was rescaled approximately (it carries no base stats)\n")
     for line in res["log"][: args.log]:
         print("  " + line)
     if len(res["log"]) > args.log:
@@ -340,7 +351,7 @@ def cmd_battle(app: App, args) -> int:
     w, l = res["winner"], res["loser"]
     print(f"\n🏆 {w['name']} ({w['trainer']}) wins in {res['turns']} turn{'s' if res['turns'] != 1 else ''} · "
           f"{res['remaining'][w['name']]} HP left · {l['name']} ({l['trainer']}) fainted")
-    print(f"power {B.power_score(card_a)} vs {B.power_score(card_b)}")
+    print(f"power {B.power_score(fa)} vs {B.power_score(fb)}")
     return 0
 
 
@@ -695,6 +706,8 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("other", nargs="?", help="second card: spectate two cards instead of using yours")
     bt.add_argument("--log", type=int, default=12, help="turns of battle log to print")
     bt.add_argument("--with", dest="with_", metavar="NAME", help="field this owned Pokémon (remembered)")
+    bt.add_argument("--raw", action="store_true",
+                    help=f"fight at each Pokémon's own level instead of Lv {B.FLAT_LEVEL} for both")
     sub.add_parser("dex", help="Pokédex / catch log")
     sh = sub.add_parser("shop", help="token shop")
     sh.add_argument("--buy", help="candy | mint | charm | egg | egg-uncommon | egg-rare")

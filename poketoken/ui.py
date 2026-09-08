@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PIL import Image, ImageSequence, ImageTk
 
-from . import battle as B, battle_ui as BU, companion as C, fmt, instance, layout as L, notify
+from . import battle as B, battle_ui as BU, companion as C, fmt, instance, layout as L, notify, settings
 from .theme import (DARK, LIGHT, RARITY_COLOR, SPRITE, SPRITE_BOXES, SPRITE_PAD, STATE_COLOR, STATE_LABEL,
                     TYPE_COLORS, DEFAULT_SPRITE_BOX, GAP, MAX_CONTENT, MAX_READING, RADIUS,
                     breakpoint_for, button_height, card_pad, is_compact, is_touch, row_height, type_scale)
@@ -1906,6 +1906,16 @@ class PokeWindow:
         meta = (self.payload or {}).get("meta", {}).get(sid) if sid is not None else None
         return BU.own_card(self.app.companion, meta, self.app.dir, sid)
 
+    def _toggle_flat(self) -> None:
+        """Flat levels make a fight between a veteran and a newcomer worth having; raw levels
+        keep the gap. Either way the fight is deterministic for both sides."""
+        on = not bool(settings.get(self.app.dir, "flat_battle", True))
+        settings.set(self.app.dir, "flat_battle", on)
+        self._battle().reset_fight()
+        self._toast(f"Battles use Lv {B.FLAT_LEVEL} for both sides" if on
+                    else "Battles use each Pokémon's own level")
+        self.render()
+
     def _set_fighter(self, sid: int | None) -> None:
         """Choose which Pokémon fights. A Pokédex record fields at level 100; the companion
         fields at whatever level it has grown to."""
@@ -2024,7 +2034,10 @@ class PokeWindow:
             self.render()
             return
         self._battle_reset()
-        st.mine, st.pending = mine, True
+        flat = bool(settings.get(self.app.dir, "flat_battle", True))
+        st.flat = flat
+        st.mine, st.other = B.fielded(mine, st.challenger, flat)
+        st.pending = True
         api, q = self.app.api, st.q                # never `self` in the thread (see refresh)
 
         def work():
@@ -2046,13 +2059,13 @@ class PokeWindow:
             st.job = self.root.after(100, self._battle_poll)
             return
         st.pending = False
-        if kind != "chart" or st.mine is None or st.challenger is None:
+        if kind != "chart" or st.mine is None or st.other is None:
             self.app.log(f"battle: type chart unavailable: {payload}")
             st.error = "PokéAPI unreachable — the type chart could not be loaded, try again later"
             self.render()
             return
-        st.result = B.simulate(st.mine, st.challenger, payload)
-        st.schedule = BU.hp_schedule(st.result, st.mine, st.challenger)
+        st.result = B.simulate(st.mine, st.other, payload)
+        st.schedule = BU.hp_schedule(st.result, st.mine, st.other)
         st.step = 0
         self.render()
         region = str(self.c.cget("scrollregion")).split()
@@ -2083,7 +2096,7 @@ class PokeWindow:
         st.step = len(st.schedule) - 1
         if not st.recorded:
             st.recorded = True
-            st.history = BU.append_history(self.app.dir, BU.record_from_result(st.result, st.mine, st.challenger))
+            st.history = BU.append_history(self.app.dir, BU.record_from_result(st.result, st.mine, st.other))
         self.render()
 
     def _battle_card_rows(self, x, w, cy, card, paths) -> int:
@@ -2195,10 +2208,17 @@ class PokeWindow:
                 self._battle_button(x0 + pad, cy, bw, bh, "Rematch" if st.result else "Battle!", "bt:go",
                                     self._battle_start, "filled")
                 hint = ""
+            flat_on = bool(settings.get(self.app.dir, "flat_battle", True))
+            flat_label = f"Lv {B.FLAT_LEVEL} flat" if flat_on else "Raw levels"
+            flat_w = self.measure("Raw levels", "captionB") + 26
+            self._battle_button(x0 + pad + bw + 8, cy, flat_w, bh, flat_label, "bt:flat",
+                                self._toggle_flat, "tinted")
+            self._tooltip("bt:flat", "Both Pokémon fight at level 50, so species, IVs and types decide it"
+                          if flat_on else "Each Pokémon fights at its own level")
             clear_w = self.measure("Clear", "captionB") + 26
             self._battle_button(x0 + cw - pad - clear_w, cy, clear_w, bh, "Clear", "bt:clear", self._battle_clear, "tinted")
             if hint and not self.narrow:
-                self.text(x0 + pad + bw + 10, cy + bh / 2, hint, "caption", "tertiary", anchor="w")
+                self.text(x0 + pad + bw + flat_w + 18, cy + bh / 2, hint, "caption", "tertiary", anchor="w")
             cy += bh + 8
         elif not st.error:
             for ln in (("Paste a card, then Battle!",) if self.narrow
@@ -2226,15 +2246,16 @@ class PokeWindow:
         self.text(x0 + pad, cy, "ARENA", "captionB", "secondary", tags=("arena",))
         shown = min(st.step, len(res["log"]))
         turn = res["log"][shown - 1].split(":", 1)[0][1:] if shown else "0"
-        self.text(x0 + cw - pad, cy, f"turn {turn} of {res['turns']}" + ("" if st.finished else " · tap to skip"),
-                  "caption", "tertiary", anchor="ne", tags=("arena",))
+        mode = f"Lv {B.FLAT_LEVEL} flat" if st.flat else "raw levels"
+        self.text(x0 + cw - pad, cy, f"{mode} · turn {turn} of {res['turns']}"
+                  + ("" if st.finished else " · tap to skip"), "caption", "tertiary", anchor="ne", tags=("arena",))
         cy += 22
         half = (cw - 2 * pad) / 2
         lx, rx = x0 + pad + half / 2, x0 + pad + half * 1.5
         self.sprite_draw_box = box
         self.sprite_subject = ("mon",) + (BU.sprite_key(st.mine) or (0, False))
         self.sprite_item = self.c.create_image(lx, cy + box / 2, image="", tags=("arena",))
-        key = BU.sprite_key(st.challenger)
+        key = BU.sprite_key(st.other)
         ph = self._battle_static_img(paths.get(("static",) + key) if key else None, box)
         if ph:
             self.c.create_image(rx, cy + box / 2, image=ph, tags=("arena",))
@@ -2243,7 +2264,7 @@ class PokeWindow:
         self.text(x0 + pad + half, cy + box / 2, "VS", "title2", "tertiary", anchor="center", tags=("arena",))
         cy += box + 6
         bw = min(half - 24, 240)
-        for cx, c_, hp, who in ((lx, st.mine, hp_a, "you"), (rx, st.challenger, hp_b, c_trainer(st.challenger))):
+        for cx, c_, hp, who in ((lx, st.mine, hp_a, "you"), (rx, st.other, hp_b, c_trainer(st.other))):
             mx = int(c_["stats"]["hp"])
             frac = hp / mx if mx else 0
             self.text(cx, cy, self._ellipsize(c_["name"], "captionB", half - 12), "captionB", "label",
@@ -2258,7 +2279,7 @@ class PokeWindow:
 
     def _battle_banner(self, y, x0, cw) -> float:
         st = self._battle()
-        bn = BU.banner(st.result, st.mine, st.challenger, side=0)
+        bn = BU.banner(st.result, st.mine, st.other, side=0)
         colr = "green" if bn["won"] else "red"
         pad = self.pad
         lines = [bn["detail"], bn["power"]]
@@ -2279,7 +2300,7 @@ class PokeWindow:
         pad = self.pad
         shown = min(st.step, len(res["log"]))
         keep = 6 if self.narrow else 10
-        rows = BU.log_rows(res, "You", c_trainer(st.challenger))[max(0, shown - keep):shown]
+        rows = BU.log_rows(res, "You", c_trainer(st.other))[max(0, shown - keep):shown]
         h = pad + 18 + 17 * max(1, len(rows)) + pad
         self.card(x0, y, cw, h)
         self.text(x0 + pad, y + pad - 4, "BATTLE LOG", "captionB", "secondary")
@@ -2328,7 +2349,7 @@ class PokeWindow:
         """Battle leads with whatever matters now: the arena once a fight exists, the two cards
         while one is being set up. Wide viewports put the cards side by side (§9)."""
         st = self._battle()
-        fighting = bool(st.result and st.mine and st.challenger)
+        fighting = bool(st.result and st.mine and st.other)
         cols = 2 if (cw >= 720 and not self.narrow) else 1
         colw = (cw - GAP) / 2 if cols == 2 else cw
 

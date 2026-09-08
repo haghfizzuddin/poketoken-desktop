@@ -21,6 +21,19 @@
 - The footer no longer carries build information; it moved to About in the menu.
 
 ### Added
+- **Honest battle levels.** A Pokédex record now fields at the level it earned: a graduation at
+  100, a Pokémon released part-way at the level it reached, one caught in the wild at the level
+  it was met. Previously every record fielded at 100, so a lucky catch was worth as much as a
+  three-billion-token graduation.
+- **Flat fights.** Both sides scale to Lv 50 by default (the games' flat rules), so species,
+  IVs, nature and types decide a battle instead of who has burned more tokens; `--raw` or the
+  Battle tab's toggle keeps each Pokémon's own level. Cards are now version 2 and carry base
+  stats and IVs so either side can re-level them exactly; version 1 cards are rescaled
+  approximately and say so.
+- **A wider, less repetitive wild.** Encounters draw from all 648 Gen 1-5 species rather than
+  the 328 base forms an egg can hatch, so evolved Pokémon can turn up. A species already in the
+  Pokédex is half as likely, the species you met last cannot appear twice running, and the
+  egg's rarity guarantee no longer leaks into wild encounters.
 - **Choose who fights.** Any Pokémon in the Pokédex can be fielded instead of the companion,
   from its species page ("Use in battle") or with `--with <name>` on `card` and `battle`. A
   record fights at level 100 with its saved IVs — the same numbers its species page shows —

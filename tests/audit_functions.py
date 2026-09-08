@@ -101,6 +101,10 @@ except pokeapi.PokeAPIError as e:
     problems.append(f"random_base_via_rest failed: {e}")
 # base index: fresh GraphQL, then a broken endpoint with (a) stale disk cache, (b) nothing
 idx = api.base_index(); print("graphql base index:", len(idx), "species")
+wild = api.wild_index()                                   # the wider pool wild encounters draw from
+print("graphql wild index:", len(wild), "species (evolved forms included)")
+if len(wild) <= len(idx):
+    problems.append("wild index should be wider than the egg pool")
 saved_gql = pokeapi.GRAPHQL
 pokeapi.GRAPHQL = "https://127.0.0.1:9/"
 api2 = pokeapi.PokeAPI(scratch / "cache", scratch / "sprites")
@@ -217,14 +221,16 @@ for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], [
              ["dex"], ["shop"],
              ["card", "--trainer", "Audit"], ["card", "--json"], ["buddy"], ["buddy", "Pidgeot"],
              ["buddy", "#18"], ["buddy", "nosuchmon"], ["buddy", "--clear"],
-             ["card", "--with", "Pidgeot"], ["card", "--with", "nosuchmon"], ["card", "--with", "Ivysaur"], ["shop", "--buy", "mint"],
+             ["card", "--with", "Pidgeot"], ["card", "--with", "nosuchmon"], ["card", "--with", "Ivysaur"],
+             ["encounter"], ["shop", "--buy", "mint"],
              ["shop", "--buy", "egg-rare"], ["bag"], ["bag", "--use", "candy"], ["bag", "--use", "mint"],
              ["bag", "--use", "bogus"], ["debug"], []):
     rc, out = quiet(cli.main, base + argv)
     if argv[:1] == ["card"] and "--json" not in argv:
         token = next((ln for ln in out.splitlines() if ln.startswith("PT1.")), "")
         card_file.write_text(token)
-        for bargs in (["battle", token, "--log", "3"], ["battle", str(card_file), token], ["battle", "not-a-card"]):
+        for bargs in (["battle", token, "--log", "3"], ["battle", token, "--raw", "--log", "1"],
+                      ["battle", str(card_file), token], ["battle", "not-a-card"]):
             brc, bout = quiet(cli.main, base + bargs)
             print(f" battle {bargs[1][:12]:<14}       rc={brc} {bout.strip().splitlines()[-1][:60] if bout.strip() else ''}")
     flag = "" if rc in (0, 1, None) else "  <-- unexpected rc"
@@ -488,6 +494,8 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         while win.root.winfo_width() < 1000 and time.time() - t0 < 4:
             win.root.update(); time.sleep(0.03)
         win._set_fighter(999999); win._set_fighter(None)                            # rejected, then reset
+        win.set_tab("battle"); win._toggle_flat(); win.render()                     # raw levels
+        win._toggle_flat(); win.render()                                            # back to flat
         win.open_species(18); win.root.update()
         win._escape()                                                               # backs out of the page, does not quit
         win.open_species(18); win.root.update()

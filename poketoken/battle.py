@@ -18,15 +18,18 @@ from datetime import date
 from . import companion as C
 
 CARD_PREFIX = "PT1."
+CARD_VERSION = 2            # 2 carries base stats and IVs, so a card can be re-levelled exactly
+FLAT_LEVEL = 50             # the level both sides are scaled to for a fair fight (VGC flat rules)
 MOVE_POWER = 60
 MAX_TURNS = 100
 STAB = 1.5
 
 
 # ------------------------------------------------------------------ cards
-def _card(trainer: str, species: int, name: str, view: dict, nature, shiny: bool, rarity: str) -> dict:
+def _card(trainer: str, species: int, name: str, view: dict, nature, shiny: bool, rarity: str,
+          base: dict | None = None, ivs: dict | None = None) -> dict:
     return {
-        "v": 1,
+        "v": CARD_VERSION,
         "trainer": trainer[:24],
         "species": species,
         "name": name,
@@ -37,6 +40,9 @@ def _card(trainer: str, species: int, name: str, view: dict, nature, shiny: bool
         "shiny": bool(shiny),
         "rarity": rarity,
         "ivTotal": view["iv_total"],
+        # base stats and IVs travel with the card so either side can recompute it at any level
+        "base": dict(base) if base else None,
+        "ivs": dict(ivs) if ivs else None,
         "date": date.today().isoformat(),
     }
 
@@ -47,7 +53,8 @@ def make_card(comp: C.Companion, meta: dict, trainer: str) -> dict | None:
     a = comp.state.active
     if view is None or a is None:
         return None
-    return _card(trainer, a.current_id, comp.display_name(), view, a.nature, a.shiny_visible, a.rarity)
+    return _card(trainer, a.current_id, comp.display_name(), view, a.nature, a.shiny_visible, a.rarity,
+                 base=meta.get("stats"), ivs=a.ivs)
 
 
 def record_card(comp: C.Companion, sid: int, meta: dict, trainer: str) -> dict | None:
@@ -62,8 +69,9 @@ def record_card(comp: C.Companion, sid: int, meta: dict, trainer: str) -> dict |
             next((e for e in comp.state.dex if sid in e.chain_order), None)
     if entry is None:
         return None
-    view = C.Companion.stats_view_static(meta, entry.ivs, entry.nature)
-    return _card(trainer, sid, comp.buddy_name(sid), view, entry.nature, entry.is_shiny, entry.rarity)
+    view = C.Companion.stats_view_static(meta, entry.ivs, entry.nature, level=entry.battle_level())
+    return _card(trainer, sid, comp.buddy_name(sid), view, entry.nature, entry.is_shiny, entry.rarity,
+                 base=meta.get("stats"), ivs=entry.ivs)
 
 
 def encode_card(card: dict) -> str:
@@ -85,7 +93,7 @@ def decode_card(text: str) -> dict:
 
 
 def validate_card(card) -> dict:
-    if not isinstance(card, dict) or card.get("v") != 1:
+    if not isinstance(card, dict) or card.get("v") not in (1, CARD_VERSION):
         raise ValueError("unsupported card version")
     stats = card.get("stats")
     if not isinstance(stats, dict) or any(k not in stats for k in C.STAT_KEYS):
@@ -99,9 +107,47 @@ def validate_card(card) -> dict:
         raise ValueError("card needs one or two types")
     if not isinstance(card.get("level"), int) or not 1 <= card["level"] <= 100:
         raise ValueError("bad level")
+    for key in ("base", "ivs"):                   # optional, but must be sane when present
+        v = card.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, dict) or any(k not in v for k in C.STAT_KEYS):
+            card[key] = None
+            continue
+        lo, hi = (1, 255) if key == "base" else (0, C.IV_MAX)
+        if any(not isinstance(v[k], int) or isinstance(v[k], bool) or not lo <= v[k] <= hi for k in C.STAT_KEYS):
+            card[key] = None
     card["name"] = str(card.get("name", "?"))[:32]
     card["trainer"] = str(card.get("trainer", "?"))[:24]
     return card
+
+
+def at_level(card: dict, level: int) -> dict:
+    """The same Pokémon as it would be at `level`. A version 2 card carries base stats and IVs,
+    so this is the games' formula again, exactly. An older card only knows its final numbers, so
+    they are scaled and the result is marked approximate."""
+    level = max(1, min(C.LEVEL_MAX, int(level)))
+    if int(card.get("level", level)) == level:
+        return card
+    out = dict(card, level=level)
+    base, ivs = card.get("base"), card.get("ivs")
+    if isinstance(base, dict) and all(k in base for k in C.STAT_KEYS):
+        out["stats"] = {k: C.stat_value(k, int(base[k]), int((ivs or {}).get(k, 0)), level, card.get("nature"))
+                        for k in C.STAT_KEYS}
+    else:
+        f = level / max(1, int(card.get("level", 1)))
+        out["stats"] = {k: max(1, round(int(v) * f)) for k, v in card["stats"].items()}
+        out["approx"] = True
+    return out
+
+
+def fielded(card_a: dict, card_b: dict, flat: bool = True) -> tuple[dict, dict]:
+    """The two cards as they take the field: scaled to a common level unless raw levels were
+    asked for. Flat is the default because level otherwise decides almost everything — it swings
+    power about 5.6x across the range, where species is 1.9x and IVs 1.2x."""
+    if not flat:
+        return card_a, card_b
+    return at_level(card_a, FLAT_LEVEL), at_level(card_b, FLAT_LEVEL)
 
 
 def card_summary(card: dict) -> str:

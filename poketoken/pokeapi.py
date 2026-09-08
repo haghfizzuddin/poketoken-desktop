@@ -183,6 +183,7 @@ class PokeAPI:
         self._type_chart: dict[str, dict[str, float]] | None = None
         self._lines: dict[int, EvoLine] = {}
         self._base_index: list[tuple[int, int]] | None = None
+        self._wild_index: list[tuple[int, int]] | None = None
         self._opener = _build_opener()
 
     # ------------------------------------------------------------------ http
@@ -345,6 +346,36 @@ class PokeAPI:
                 self._base_index = [(int(i), int(c)) for i, c in disk["entries"]]
                 return self._base_index
             raise PokeAPIError(f"base index unavailable: {e}") from e
+
+    def wild_index(self) -> list[tuple[int, int]]:
+        """[(species_id, capture_rate)] for every Gen 1-5 species, evolved forms included. Eggs
+        hatch base forms only; the wild is where an already-evolved Pokémon can turn up, so the
+        two draws come from different pools."""
+        if self._wild_index:
+            return self._wild_index
+        path = self.cache_dir / "wild-index.json"
+        disk = self._read_json(path)
+        if disk and time.time() - float(disk.get("fetchedAt", 0)) < BASE_INDEX_TTL and disk.get("entries"):
+            self._wild_index = [(int(i), int(c)) for i, c in disk["entries"]]
+            return self._wild_index
+        try:
+            q = ("{ pokemonspecies(where: {id: {_lte: %d, _neq: %d}}, order_by: {id: asc}) "
+                 "{ id capture_rate } }" % (ANIMATED_IDS[-1], DITTO_ID))
+            body = json.dumps({"query": q}).encode()
+            resp = json.loads(self._http(GRAPHQL, data=body, headers={"Content-Type": "application/json"}))
+            rows = resp.get("data", {}).get("pokemonspecies") or []
+            entries = [(int(r["id"]), int(r["capture_rate"])) for r in rows]
+            if not entries:
+                raise PokeAPIError("empty wild index")
+            self._write_json(path, {"fetchedAt": time.time(), "entries": entries})
+            self._wild_index = entries
+            return entries
+        except (PokeAPIError, ValueError, KeyError, TypeError) as e:
+            if disk and disk.get("entries"):
+                self._wild_index = [(int(i), int(c)) for i, c in disk["entries"]]
+                return self._wild_index
+            self._wild_index = self.base_index()          # fall back to the egg pool
+            return self._wild_index
 
     def random_base_via_rest(self, rng: random.Random, tier: str | None = None, tries: int = 16) -> int | None:
         """Fallback when GraphQL is down: sample ids until one is a base species (and meets the tier)."""

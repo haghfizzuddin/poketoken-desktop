@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from poketoken import companion as C  # noqa: E402
+from poketoken.pokeapi import PokeAPIError  # noqa: E402
 from test_companion import FakeAPI  # noqa: E402
 from test_history import comp_with_history  # noqa: E402
 
@@ -19,11 +20,20 @@ T = TODAY.isoformat()
 
 
 class SpeciesFakeAPI(FakeAPI):
+    def wild_index(self):
+        """The wild draws from every species, so the fake offers evolved forms too."""
+        if self.offline:
+            raise PokeAPIError("offline")
+        return self.index + [(2, 45), (17, 120)]
+
     def species(self, sid):
-        caps = dict(self.index)
-        return {"id": sid, "name": {1: "bulbasaur", 16: "pidgey", 133: "eevee"}.get(sid, f"sp{sid}"),
+        caps = dict(self.index + [(2, 45), (17, 120)])
+        return {"id": sid, "name": {1: "bulbasaur", 2: "ivysaur", 16: "pidgey", 17: "pidgeotto",
+                                    133: "eevee"}.get(sid, f"sp{sid}"),
                 "capture_rate": caps.get(sid, 255), "is_legendary": False, "is_mythical": False,
-                "evolves_from": None, "chain_url": "", "names": {"en": {1: "Bulbasaur", 16: "Pidgey", 133: "Eevee"}.get(sid, f"#{sid}")}}
+                "evolves_from": None, "chain_url": "",
+                "names": {"en": {1: "Bulbasaur", 2: "Ivysaur", 16: "Pidgey", 17: "Pidgeotto",
+                                 133: "Eevee"}.get(sid, f"#{sid}")}}
 
 
 def make(rows=None, seed=1):
@@ -71,7 +81,7 @@ class TriggerTests(unittest.TestCase):
         enc = c.current_encounter(tomorrow)
         self.assertEqual(enc["trigger"], "streak day earned")
         self.assertEqual(enc["status"], "wild")
-        self.assertIn(enc["species"], (1, 16, 133))
+        self.assertIn(enc["species"], (1, 2, 16, 17, 133))
         self.assertEqual(c.evaluate_encounters(tomorrow), [])       # same trigger never fires twice
         self.assertEqual([e["kind"] for e in c.drain_events()], ["encounter"])
 

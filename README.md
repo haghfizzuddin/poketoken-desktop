@@ -34,18 +34,22 @@ evolve it through its real evolution line, graduate it into your Pokédex, start
 4. **Graduate.** Final form + threshold archives it in the Pokédex and a fresh egg arrives.
 5. **Shop & Bag.** Tokens you have used are your currency: Rare Candy (+100M growth), a Mint
    (re-roll nature), a Shiny Charm (1/64 → 1/48), or a new egg — plain, Uncommon+ or Rare+.
-6. **Streaks and the weekly goal earn Rare Candy.** A day counts at 1M+ tokens. Streak
+6. **Wild Pokémon.** A streak day or a personal-best 5-hour block brings one wild Pokémon,
+   drawn from every species rather than the base forms an egg can hatch, weighted by capture
+   rate, half as likely for something already in your Pokédex, and never the same species twice
+   in a row. It waits until the end of the next day, then leaves.
+7. **Streaks and the weekly goal earn Rare Candy.** A day counts at 1M+ tokens. Streak
    milestones of 3 / 7 / 14 / 30 days pay 1 / 2 / 3 / 5 candies (then 5 per further 30 days);
    beating your weekly goal — the median of your previous weeks, floor 50M — pays 5. This
    replaces upstream's rate-limit grants and rewards showing up, not burning.
-7. **Stats, IVs and luck.** Every hatch rolls six hidden IVs (0–31). Consistency and efficiency
+8. **Stats, IVs and luck.** Every hatch rolls six hidden IVs (0–31). Consistency and efficiency
    during incubation add best-of bonus rolls: a 7- and 14-day streak, a 7-day cache-read ratio
    of 70 % and 90 %. A 7-day streak also cuts the shiny denominator by a quarter. Rarity odds
    are never touched, so raw volume buys nothing. Level 5→100 follows growth toward
    graduation and stats use the games' formula with the nature's ±10 %.
-8. **Ditto.** 1 in 128 common multi-stage hatches is a Ditto in disguise; it drops the act at
+9. **Ditto.** 1 in 128 common multi-stage hatches is a Ditto in disguise; it drops the act at
    the first evolution threshold. Its shininess stays hidden until then.
-9. **Battle cards.** `poketoken card` prints a short `PT1.…` token; a colleague runs
+10. **Battle cards.** `poketoken card` prints a short `PT1.…` token; a colleague runs
    `poketoken battle <token>` and both of you get the same deterministic fight — real type
    matchups, STAB, physical or special by the better stat. Trust-based and for fun.
 
@@ -120,12 +124,19 @@ page, or with `poketoken buddy <name>`. It is a display choice only: the compani
 raising keeps growing underneath, and the card's progress bar says whose it is. A species you do
 not own cannot be pinned, so a pin can never reveal something you have not seen.
 
-**Who fights.** By default you field the Pokémon you are raising, at whatever level it has
-grown to. Any Pokémon in your Pokédex can take its place: open its species page and press
-**Use in battle**, or pass `--with <name>` to `card` or `battle`. A Pokédex Pokémon is finished
-growing, so it fields at level 100 with the IVs it was recorded with — considerably stronger
-than a young companion, which is the trade for having graduated it. The choice is remembered
-and shown on the Battle tab.
+**Who fights, and at what level.** A level here is how far a Pokémon got toward graduating:
+`5 + 95 × (tokens burned ÷ the graduation total for its rarity)`. What each record fields at
+reflects what it cost — a graduation is Lv 100, a Pokémon you released part-way fields at the
+level it reached, and one caught in the wild fields at the level you met it (20 / 30 / 40 / 50
+by rarity, ± 3). You field the companion by default; any owned Pokémon can take its place from
+its species page ("Use in battle") or `--with <name>`.
+
+Fights are **flat by default**: both sides are scaled to Lv 50, as in the games' flat rules, so
+species, IVs, nature and type matchups decide them rather than who has burned more tokens. The
+level axis is worth about 5.6× across its range where species is 1.9× and IVs 1.2×, which is
+why it otherwise decides everything. Training still shows: only graduating unlocks the strong
+final forms you can field at all, and IVs come from your streaks and cache efficiency. Pass
+`--raw` (or the toggle on the Battle tab) to fight at each Pokémon's own level instead.
 
 **Responsive layout.** On a narrow window the companion's art gives up height so that it, the
 evolution track, rewards and today's usage all share the first screen: the sprite grows on a

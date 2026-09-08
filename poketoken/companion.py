@@ -126,11 +126,25 @@ ENCOUNTER_TTL_DAYS = 2                 # a wild Pokémon waits until the end of 
 ENCOUNTER_BEST_BLOCK_MIN = 5_000_000   # a personal-best 5h block only counts from here
 ENCOUNTER_LOG = 40                     # encounters kept in the save
 FLEE_CHANCE = 0.30                     # after a failed throw
+# the level a wild Pokémon is met at, by rarity (± WILD_LEVEL_SPREAD). A catch is a lucky find,
+# not a raised Pokémon: it is worth fielding, but never worth a graduation.
+WILD_LEVEL = {"common": 20, "uncommon": 30, "rare": 40, "legendary": 50}
+WILD_LEVEL_SPREAD = 3
 BALLS = {
     "pokeBall":  {"label": "Poké Ball",  "price": 50_000_000,  "mult": 1.0, "sprite": "poke-ball"},
     "greatBall": {"label": "Great Ball", "price": 150_000_000, "mult": 1.5, "sprite": "great-ball"},
     "ultraBall": {"label": "Ultra Ball", "price": 400_000_000, "mult": 2.0, "sprite": "ultra-ball"},
 }
+
+
+def default_record_level(source: str, rarity: str) -> int:
+    """The level a Pokédex record fields at when it predates levels being stored: a graduation
+    was finished, a release was not, a catch was met in the wild."""
+    if source == "wild":
+        return WILD_LEVEL.get(rarity, 20)
+    if source == "released":
+        return LEVEL_MAX // 2
+    return LEVEL_MAX
 
 
 def catch_chance(capture_rate: int, ball: str) -> float:
@@ -251,6 +265,7 @@ class DexEntry:
     released_at: str | None = None
     ivs: dict[str, int] | None = None
     source: str = "graduated"          # graduated | released | wild
+    level: int | None = None           # what it fields at; None = a record from before levels
 
     @property
     def is_released(self) -> bool:
@@ -260,6 +275,10 @@ class DexEntry:
     def is_wild(self) -> bool:
         return self.source == "wild"
 
+    def battle_level(self) -> int:
+        """The level this record fields at."""
+        return self.level or default_record_level(self.source, self.rarity)
+
     def name(self, sid: int, lang: str = "en") -> str:
         by = (self.names or {}).get(sid, {})
         return by.get(lang) or by.get("en") or f"#{sid}"
@@ -268,7 +287,8 @@ class DexEntry:
         return {"id": self.id, "baseID": self.base_id, "finalID": self.final_id, "chainOrder": self.chain_order,
                 "rarity": self.rarity, "caughtAt": self.caught_at, "isShiny": self.is_shiny, "nature": self.nature,
                 "names": {str(k): v for k, v in self.names.items()} if self.names else None,
-                "releasedAt": self.released_at, "ivs": self.ivs, "source": self.source}
+                "releasedAt": self.released_at, "ivs": self.ivs, "source": self.source,
+                "level": self.level}
 
     @staticmethod
     def from_dict(d) -> "DexEntry | None":
@@ -283,7 +303,9 @@ class DexEntry:
                             d.get("caughtAt"), bool(d.get("isShiny", False)),
                             d.get("nature") if d.get("nature") in NATURES else None, parsed, d.get("releasedAt"), ivs,
                             d.get("source") if d.get("source") in ("graduated", "released", "wild") else
-                            ("released" if d.get("releasedAt") else "graduated"))
+                            ("released" if d.get("releasedAt") else "graduated"),
+                            int(d["level"]) if isinstance(d.get("level"), int) and not isinstance(d.get("level"), bool)
+                            and 1 <= d["level"] <= LEVEL_MAX else None)
         except (KeyError, TypeError, ValueError, AttributeError):
             return None
 
@@ -692,7 +714,7 @@ class Companion:
             id=str(uuid.uuid4()), base_id=a.base_id, final_id=final_id, chain_order=list(a.path_ids),
             rarity=a.rarity, caught_at=_now_iso(), is_shiny=a.is_shiny, nature=a.nature,
             names={sid: dict(line.names[sid]) for sid in a.path_ids if sid in line.names} if line else None,
-            ivs=a.ivs, source="graduated"))
+            ivs=a.ivs, source="graduated", level=LEVEL_MAX))
         name = line.name(final_id, self.state.language) if line else f"#{final_id}"
         self.just_graduated = name
         self.event_until = self.clock() + 6
@@ -728,6 +750,32 @@ class Companion:
         except PokeAPIError as e:
             self.log(f"REST fallback failed: {e}")
             return None
+
+    def choose_wild(self) -> int | None:
+        """Pick the species of a wild Pokémon. Drawn from every species, not just the base forms
+        an egg can hatch, weighted by capture rate so commons are ordinary and legendaries are
+        not. A species already in the Pokédex is half as likely, and the one you met last cannot
+        appear twice in a row, so encounters keep showing you something new. The egg's guarantee
+        is deliberately ignored here — it was bought for the egg, not for the wild."""
+        try:
+            index = self.api.wild_index()
+        except PokeAPIError as e:
+            self.log(f"wild index unavailable ({e})")
+            return None
+        if not index:
+            return None
+        owned = {sid for e in self.state.dex for sid in e.chain_order}
+        last = next((e["species"] for e in reversed(self.state.encounters) if e.get("species")), None)
+        pool = [(sid, cap) for sid, cap in index if sid != last]
+        if not pool:
+            pool = list(index)
+        weights = [max(1, cap // 2) if sid in owned else max(1, cap) for sid, cap in pool]
+        r = self.rng.randrange(sum(weights))
+        for (sid, _cap), w in zip(pool, weights):
+            r -= w
+            if r < 0:
+                return sid
+        return pool[-1][0]
 
     def ensure_egg_prefetch(self) -> None:
         s = self.state
@@ -1053,8 +1101,7 @@ class Companion:
 
     def spawn_encounter(self, today: str, reason: str) -> dict | None:
         try:
-            index = dict(self.api.base_index())
-            sid = self.choose_base()
+            sid = self.choose_wild()
             if sid is None:
                 return None
             sp = self.api.species(sid)
@@ -1064,13 +1111,15 @@ class Companion:
         luck = self.luck_signals(today)
         shiny = self.rng.getrandbits(64) % luck["shinyDenominator"] == 0
         rarity = rarity_from(sp["capture_rate"], sp["is_legendary"], sp["is_mythical"])
+        spread = WILD_LEVEL_SPREAD
+        level = max(2, WILD_LEVEL.get(rarity, 20) + self.rng.randint(-spread, spread))
         enc = {"id": str(uuid.uuid4()), "species": sid, "name": sp["names"].get(self.state.language) or sp["names"].get("en") or sp["name"].title(),
-               "names": dict(sp["names"]), "captureRate": int(sp.get("capture_rate", index.get(sid, 255))),
+               "names": dict(sp["names"]), "captureRate": int(sp.get("capture_rate", 255)), "level": level,
                "rarity": rarity, "shiny": shiny, "nature": self.rng.choice(NATURES), "trigger": reason,
                "appeared": today, "expires": (date.fromisoformat(today) + timedelta(days=ENCOUNTER_TTL_DAYS - 1)).isoformat(),
                "status": "wild", "throws": 0, "luck": luck}
         self.state.encounters.append(enc)
-        self._emit("encounter", species=sid, name=enc["name"], rarity=rarity, shiny=shiny, reason=reason)
+        self._emit("encounter", species=sid, name=enc["name"], rarity=rarity, shiny=shiny, reason=reason, level=level)
         return enc
 
     def best_ball(self) -> str | None:
@@ -1101,7 +1150,8 @@ class Companion:
             self.state.dex.append(DexEntry(id=str(uuid.uuid4()), base_id=enc["species"], final_id=enc["species"],
                                            chain_order=[enc["species"]], rarity=enc["rarity"], caught_at=_now_iso(),
                                            is_shiny=bool(enc.get("shiny")), nature=enc.get("nature"),
-                                           names={enc["species"]: dict(enc.get("names") or {})}, ivs=ivs, source="wild"))
+                                           names={enc["species"]: dict(enc.get("names") or {})}, ivs=ivs, source="wild",
+                                           level=int(enc.get("level") or default_record_level("wild", enc["rarity"]))))
             self.state.collected_finals.add(f"{enc['species']}:{enc['species']}")
             enc["status"] = "caught"
             self._emit("caught", species=enc["species"], name=enc["name"], shiny=bool(enc.get("shiny")), ball=kind)
@@ -1171,7 +1221,8 @@ class Companion:
                                   chain_order=list(reached), rarity=a.rarity, caught_at=_now_iso(),
                                   is_shiny=a.is_shiny, nature=a.nature,
                                   names={sid: dict(self.line.names[sid]) for sid in reached if sid in self.line.names}
-                                  if self.line else None, released_at=_now_iso(), source="released"))
+                                  if self.line else None, released_at=_now_iso(), source="released",
+                                  level=self.level()))
             s.active = None
             self.line = None
         s.reconcile_representative()      # the released companion may have been the pinned one
