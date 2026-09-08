@@ -132,7 +132,7 @@ class App:
         out.append(f"Goal:   {self.goal_line(snap.today_date)}")
         out.append("")
         inv = " ".join(f"{C.ITEMS[k]['emoji']}×{n}" for k, n in s.inventory.items() if n > 0) or "empty"
-        grads = sum(1 for e in s.dex if not e.is_released)
+        grads = sum(1 for e in s.dex if not e.is_released and not e.is_wild)
         out.append(f"Wallet {fmt.compact(c.wallet)} tokens · Bag {inv} · Pokédex {grads} graduated "
                    f"({len({sid for e in s.dex for sid in e.chain_order})} species)")
         return out
@@ -426,6 +426,29 @@ def cmd_buddy(app: App, args) -> int:
     return 0
 
 
+def cmd_raise(app: App, args) -> int:
+    """Take a caught or released Pokémon out of the Pokédex and raise it."""
+    app.tick()
+    c = app.companion
+    sid = _resolve_owned(app, args.who)
+    if sid is None:
+        print(f"✗ no owned Pokémon matches {args.who!r}")
+        return 1
+    ok, why = c.can_raise(sid)
+    if not ok:
+        print(f"✗ {why}")
+        return 1
+    if not args.yes:
+        gone = f"releases {c.display_name()} (Lv {c.level()}) and " if c.state.active is not None else ""
+        print(f"Raising {c.buddy_name(sid)} {gone}costs {fmt.compact(C.FRESH_EGG_PRICE)} tokens "
+              f"(you skip a hatch, so the egg's surprise is what you are buying out of).")
+        print("Run it again with --yes to go ahead.")
+        return 1
+    ok, msg = c.raise_caught(sid)
+    print(("✓ " if ok else "✗ ") + msg)
+    return 0 if ok else 1
+
+
 def cmd_dex(app: App, args) -> int:
     s = app.companion.state
     if not s.dex:
@@ -433,7 +456,7 @@ def cmd_dex(app: App, args) -> int:
         return 0
     for e in sorted(s.dex, key=lambda e: e.caught_at or ""):
         chain = " → ".join(e.name(sid, s.language) for sid in e.chain_order)
-        tag = "released" if e.is_released else "graduated"
+        tag = "released" if e.is_released else "caught" if e.is_wild else "graduated"
         print(f"{RARITY_EMOJI[e.rarity]} #{e.final_id:<4} {e.name(e.final_id, s.language):<14} "
               f"{'✨ ' if e.is_shiny else '   '}{e.rarity:<9} {(e.nature or '').title():<8} "
               f"{tag:<9} {(e.caught_at or '')[:10]}   {chain}")
@@ -695,6 +718,9 @@ def main(argv: list[str] | None = None) -> int:
     bd = sub.add_parser("buddy", help="pin an owned Pokémon to the home card")
     bd.add_argument("who", nargs="?", help="name or #id of a Pokémon in your Pokédex")
     bd.add_argument("--clear", action="store_true", help="follow the Pokémon you are raising again")
+    rz = sub.add_parser("raise", help="raise a caught or released Pokémon instead of an egg")
+    rz.add_argument("who", help="name or #id of a caught or released Pokémon")
+    rz.add_argument("--yes", action="store_true", help="confirm releasing your current companion")
     en = sub.add_parser("encounter", help="the wild Pokémon waiting for you, if any")
     en.add_argument("--throw", nargs="?", const="", metavar="BALL", help="throw your best ball, or ball|greatball|ultraball")
     cd = sub.add_parser("card", help="print your battle card to share with a colleague")
@@ -746,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = {"status": cmd_status, "watch": cmd_watch, "statusline": cmd_statusline, "refresh": cmd_refresh,
                "dex": cmd_dex, "shop": cmd_shop, "bag": cmd_bag, "pet": cmd_pet, "debug": cmd_debug,
                "history": cmd_history, "stats": cmd_stats, "card": cmd_card, "battle": cmd_battle,
-               "encounter": cmd_encounter, "buddy": cmd_buddy,
+               "encounter": cmd_encounter, "buddy": cmd_buddy, "raise": cmd_raise,
                "notify": cmd_notify, "timer": cmd_timer, "autostart": cmd_autostart,
                "export": cmd_export, "import": cmd_import,
                "app": cmd_app, "window": cmd_app, "ui": cmd_app, "open": cmd_app,

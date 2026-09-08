@@ -524,6 +524,32 @@ class PokeWindow:
         self._toast(f"PokeToken {__version__} · reads Claude Code logs · {self.app.dir}", seconds=8)
         self.render()
 
+    def _raise_caught(self, sid: int) -> None:
+        """Take a caught or released Pokémon out of the Pokédex and raise it. Arm-then-confirm
+        when it costs tokens, because it also lets the current companion go."""
+        comp = self.app.companion
+        ok, why = comp.can_raise(sid)
+        if not ok:
+            self._toast("✕ " + why)
+            self.render()
+            return
+        tag = f"raise-confirm:{sid}"
+        if not (self.armed and self.armed[0] == tag):
+            self.armed = (tag, time.time() + 4.0)
+            cost = fmt.compact(C.FRESH_EGG_PRICE)
+            gone = f"{comp.display_name()} will be released · " if comp.state.active is not None else ""
+            self._toast(f"Press again to raise it — {gone}{cost} tokens")
+            self.render()
+            return
+        self.armed = None
+        ok, msg = comp.raise_caught(sid)
+        comp.drain_events()
+        self._toast(msg if ok else "✕ " + msg)
+        self.detail = None
+        self.tab = "home"
+        self.refresh()
+        self.render()
+
     def _set_buddy(self, sid: int | None) -> None:
         ok, msg = self.app.companion.set_buddy(sid)
         self.app.companion.drain_events()
@@ -1260,7 +1286,7 @@ class PokeWindow:
             rows.append(("This week", f"{fmt.compact(snap.week.total)} · {fmt.cost(snap.week.cost)}"))
             rows.append(("This month", f"{fmt.compact(snap.month.total)} · {fmt.cost(snap.month.cost)}"))
         rows.append(("Wallet", f"{fmt.compact(comp.wallet)} tokens"))
-        grads = sum(1 for e in s.dex if not e.is_released)
+        grads = sum(1 for e in s.dex if not e.is_released and not e.is_wild)
         rows.append(("Pokédex", f"{grads} graduated · {len({sid for e in s.dex for sid in e.chain_order})} species"))
         h = 12 + 38 * len(rows) + 4
         self.card(x0, y, cw, h)
@@ -1587,7 +1613,8 @@ class PokeWindow:
         # the two actions sit in the header on a roomy card and on their own row when narrow,
         # so they never crowd the caption or each other
         owned = s.owns_species(sid)
-        stacked = owned and self.narrow
+        # three actions need real room; below that they get their own wrapping row
+        stacked = owned and (self.narrow or cw < 560)
         pin_left = x0 + cw - self.pad
         if owned and not stacked:
             pin_left = self._species_actions(x0, y + h - button_height(self.vw) - 10, cw, sid)
@@ -1647,33 +1674,45 @@ class PokeWindow:
         return y + h + 12
 
     def _species_actions(self, x0, y, cw, sid: int, stacked: bool = False) -> float:
-        """Pin as buddy / Use in battle. Returns the left edge they occupy (so a caption beside
-        them can stop short), or the row's bottom when they are stacked on their own line."""
+        """Pin as buddy · Use in battle · Raise this one. Laid out as a wrapping row so a third
+        action never crowds the others. Returns the left edge they occupy when they share the
+        header, or the row's bottom when they are stacked on their own line."""
         comp = self.app.companion
         bh = button_height(self.vw)
         is_buddy = comp.state.representative_species_id == sid
         is_fighter = BU.fighter_sid(comp, self.app.dir) == sid
-        f_label = "Fighting" if is_fighter else "Use in battle"
-        b_label = "Unpin" if is_buddy else "Pin as buddy"
+        can_raise, why = comp.can_raise(sid)
+        acts = [("buddy:toggle", "Unpin" if is_buddy else "Pin as buddy", "tinted" if is_buddy else "filled",
+                 (lambda t=sid, on=not is_buddy: self._set_buddy(t if on else None)),
+                 "Go back to showing the Pokémon you are raising" if is_buddy else "Show this Pokémon on the home card"),
+                ("fighter:toggle", "Fighting" if is_fighter else "Use in battle",
+                 "tinted" if is_fighter else "filled",
+                 (lambda t=sid, on=not is_fighter: self._set_fighter(t if on else None)),
+                 "This one already fights for you" if is_fighter else "Field this Pokémon in battles")]
+        if can_raise or comp.raisable_record(sid) is not None:
+            acts.append(("raise:one", "Raise this one", "filled" if can_raise else "disabled",
+                         (lambda t=sid: self._raise_caught(t)),
+                         why or (f"Make it your companion for {fmt.compact(C.FRESH_EGG_PRICE)} tokens"
+                                 + (f"; {comp.display_name()} is released" if comp.state.active else ""))))
         if stacked:
-            each = (cw - 8) / 2
-            b_x, f_x, b_w, f_w = x0, x0 + each + 8, each, each
-        else:
-            f_w = max(96, self.measure(f_label, "captionB") + 26)
-            b_w = max(96, self.measure(b_label, "captionB") + 26)
-            f_x = x0 + cw - self.pad - f_w
-            b_x = f_x - 8 - b_w
-        self._battle_button(f_x, y, f_w, bh, f_label, "fighter:toggle",
-                            (lambda t=sid, on=not is_fighter: self._set_fighter(t if on else None)),
-                            "tinted" if is_fighter else "filled")
-        self._tooltip("fighter:toggle", "This one already fights for you" if is_fighter
-                      else "Field this Pokémon in battles (a Pokédex record fights at level 100)")
-        self._battle_button(b_x, y, b_w, bh, b_label, "buddy:toggle",
-                            (lambda t=sid, on=not is_buddy: self._set_buddy(t if on else None)),
-                            "tinted" if is_buddy else "filled")
-        self._tooltip("buddy:toggle", "Go back to showing the Pokémon you are raising" if is_buddy
-                      else "Show this Pokémon on the home card")
-        return y + bh if stacked else b_x
+            cols = 2 if len(acts) > 1 else 1
+            each = (cw - 8 * (cols - 1)) / cols
+            bottom = y
+            for i, (tag, label, style, handler, tip) in enumerate(acts):
+                bx = x0 + (i % cols) * (each + 8)
+                by = y + (i // cols) * (bh + 8)
+                self._battle_button(bx, by, each, bh, label, tag, handler, style)
+                self._tooltip(tag, tip)
+                bottom = max(bottom, by + bh)
+            return bottom
+        widths = [max(96, self.measure(label, "captionB") + 26) for _, label, _, _, _ in acts]
+        x = x0 + cw - self.pad
+        for (tag, label, style, handler, tip), w in zip(reversed(acts), reversed(widths)):
+            x -= w
+            self._battle_button(x, y, w, bh, label, tag, handler, style)
+            self._tooltip(tag, tip)
+            x -= 8
+        return x
 
     def draw_stats_card(self, y, x0, cw, view, live: bool, failed: bool = False) -> int:
         """Abilities and the six stats with IVs; `live` = the Pokémon being raised (shows its luck)."""

@@ -222,7 +222,7 @@ for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], [
              ["card", "--trainer", "Audit"], ["card", "--json"], ["buddy"], ["buddy", "Pidgeot"],
              ["buddy", "#18"], ["buddy", "nosuchmon"], ["buddy", "--clear"],
              ["card", "--with", "Pidgeot"], ["card", "--with", "nosuchmon"], ["card", "--with", "Ivysaur"],
-             ["encounter"], ["shop", "--buy", "mint"],
+             ["encounter"], ["raise", "nosuchmon"], ["raise", "Pidgeot"], ["shop", "--buy", "mint"],
              ["shop", "--buy", "egg-rare"], ["bag"], ["bag", "--use", "candy"], ["bag", "--use", "mint"],
              ["bag", "--use", "bogus"], ["debug"], []):
     rc, out = quiet(cli.main, base + argv)
@@ -494,6 +494,12 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         while win.root.winfo_width() < 1000 and time.time() - t0 < 4:
             win.root.update(); time.sleep(0.03)
         win._set_fighter(999999); win._set_fighter(None)                            # rejected, then reset
+        win.open_species(18); win._raise_caught(18)                                 # a graduation cannot be raised
+        win.open_species(25); win._raise_caught(25); win._raise_caught(25)          # arm, then raise the catch
+        t0 = time.time()
+        while (win.busy or win.refresh_again) and time.time() - t0 < 20:
+            win.root.update(); time.sleep(0.05)
+        win.render(); grab(win, "win-rich-raised")
         win.set_tab("battle"); win._toggle_flat(); win.render()                     # raw levels
         win._toggle_flat(); win.render()                                            # back to flat
         win.open_species(18); win.root.update()

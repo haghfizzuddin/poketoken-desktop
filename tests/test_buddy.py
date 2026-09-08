@@ -154,13 +154,24 @@ class ProgressWhilePinnedTests(unittest.TestCase):
         self.assertEqual(comp.state.dex[0].level, 22, "a Pokédex record is a snapshot, it never levels")
         self.assertEqual(comp.state.dex[0].chain_order, [25], "and it never evolves")
 
-    def test_pinning_a_form_the_companion_passes_freezes_the_art_there(self):
+    def test_the_card_follows_the_companion_through_its_own_evolutions(self):
         comp, p = self._hatched()
         first = comp.state.active.current_id
         comp.set_buddy(first)                          # pin the form it is on right now
-        self.assertFalse(comp.buddy_is_pinned, "pinning the current form just follows it")
+        self.assertFalse(comp.buddy_is_pinned, "pinning your own companion just follows it")
         thr = C.phase_threshold(comp.state.active.rarity, comp.state.active.total_forms, 0)
         comp.update({p: 16 * M + thr + 2 * M}, "2026-09-08")
-        self.assertNotEqual(comp.state.active.current_id, first)
-        self.assertEqual(comp.buddy_id, first, "the card stays on the pinned form")
-        self.assertTrue(comp.buddy_is_pinned, "and now reads as pinned, so the freeze is visible")
+        grown = comp.state.active.current_id
+        self.assertNotEqual(grown, first)
+        self.assertEqual(comp.buddy_id, grown, "the card shows what the companion has become")
+        self.assertFalse(comp.buddy_is_pinned)
+        self.assertIsNone(comp.state.representative_species_id, "the stale pin is cleaned up")
+
+    def test_a_pin_on_another_species_is_untouched_by_an_evolution(self):
+        comp, p = self._hatched()
+        comp.state.dex = [dex_entry(25, 25, [25], "Pikachu", wild=True)]
+        comp.set_buddy(25)
+        thr = C.phase_threshold(comp.state.active.rarity, comp.state.active.total_forms, 0)
+        comp.update({p: 16 * M + thr + 2 * M}, "2026-09-08")
+        self.assertEqual(comp.buddy_id, 25, "a pin on something else stays put")
+        self.assertTrue(comp.buddy_is_pinned)

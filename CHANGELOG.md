@@ -21,6 +21,11 @@
 - The footer no longer carries build information; it moved to About in the menu.
 
 ### Added
+- **Raise a caught Pokémon.** A caught or released Pokémon can be taken out of the Pokédex and
+  raised as your companion, from its species page or `poketoken raise <name> --yes`. It keeps
+  the IVs, nature and shininess it was caught with but starts at level 5 with no progress, and
+  it costs a plain egg so that hatching — and its surprise — stays the free default. Graduated
+  Pokémon are finished trophies and cannot be raised again.
 - **Honest battle levels.** A Pokédex record now fields at the level it earned: a graduation at
   100, a Pokémon released part-way at the level it reached, one caught in the wild at the level
   it was met. Previously every record fielded at 100, so a lucky catch was worth as much as a
@@ -39,7 +44,8 @@
   record fights at level 100 with its saved IVs — the same numbers its species page shows —
   while the companion fights at the level it has grown to. The choice is remembered, shown on
   the Battle tab, and falls back to the companion if that species leaves the Pokédex.
-- **Buddy.** Pin any owned Pokémon to the home card from its species page or with
+- **Buddy.** A pin on the companion's own line is ignored, so the home card follows it through
+  its evolutions instead of freezing on the form it was pinned at. Pin any owned Pokémon to the home card from its species page or with
   `poketoken buddy <name|#id>`; `--clear` goes back to following the companion. Display only —
   the companion keeps growing underneath and the progress bar names it. Ownership is required,
   so a pin cannot reveal an unseen species, and a pin to a species that later leaves the

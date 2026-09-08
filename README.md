@@ -91,6 +91,7 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 | `poketoken dex` · `shop` · `bag` | Pokédex, token shop (`--buy candy\|mint\|charm\|egg\|egg-uncommon\|egg-rare`), inventory (`--use candy\|mint`) |
 | `poketoken stats` | level, types, abilities, the six stats with IVs, and the luck behind them |
 | `poketoken buddy [name\|#id]` | pin an owned Pokémon to the home card (`--clear` to follow the one you are raising) |
+| `poketoken raise <name\|#id> --yes` | raise a caught or released Pokémon instead of hatching (costs a plain egg) |
 | `poketoken history -n 30` | daily usage table with the streak marker, streak and weekly goal |
 | `poketoken card [--trainer NAME]` | your battle card as a shareable token (`--json` for the raw card, `--with NAME` to field another Pokémon) |
 | `poketoken battle <card> [other]` | fight your Pokémon against a card, or spectate two cards (`--with NAME` to field another) |
@@ -122,7 +123,16 @@ sit beside Today on a wide window and fold into a "Show details" disclosure on a
 **Buddy.** Any Pokémon already in your Pokédex can be pinned to the home card from its species
 page, or with `poketoken buddy <name>`. It is a display choice only: the companion you are
 raising keeps growing underneath, and the card's progress bar says whose it is. A species you do
-not own cannot be pinned, so a pin can never reveal something you have not seen.
+not own cannot be pinned, so a pin can never reveal something you have not seen, and a pin on
+your own companion is ignored so the card follows it through its evolutions.
+
+**Raising a caught Pokémon.** A Pokémon you caught or gave up on can be taken back out of the
+Pokédex and raised: "Raise this one" on its species page, or `poketoken raise <name> --yes`. It
+is the same individual, so it keeps the IVs, nature and shininess it was caught with, but it
+starts at level 5 with no progress — the level it was met at was never training. It costs a
+plain egg (1B), because an egg and its surprise are the free default and choosing what to raise
+is the paid alternative; mid-raise it also sends your current companion to the Pokédex. A
+graduated Pokémon is a finished trophy and cannot be raised again.
 
 **Who fights, and at what level.** A level here is how far a Pokémon got toward graduating:
 `5 + 95 × (tokens burned ÷ the graduation total for its rarity)`. What each record fields at

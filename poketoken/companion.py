@@ -185,6 +185,13 @@ def egg_price(tier: str | None) -> int:
     return int(round(FRESH_EGG_PRICE * GRADUATION_TOTAL[tier] / GRADUATION_TOTAL["common"]))
 
 
+def fmt_compact(value: int) -> str:
+    """Local copy of the compact number format, so the game layer can phrase its own messages
+    without importing the view layer."""
+    from .fmt import compact
+    return compact(value)
+
+
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -394,10 +401,15 @@ class CompanionState:
         return a is not None and sid in a.path_ids[: a.stage_index + 1]
 
     def reconcile_representative(self) -> bool:
-        """Drop a pin for a species that is no longer owned (a released companion, a hand-edited
-        save). True when it changed."""
+        """Drop a pin that should no longer apply: one for a species no longer owned (a released
+        companion, a hand-edited save), and one pointing at a form of the Pokémon currently being
+        raised — the card follows a companion through its own evolutions rather than freezing on
+        the form it was pinned at. True when it changed."""
         sid = self.representative_species_id
-        if sid is not None and not self.owns_species(sid):
+        if sid is None:
+            return False
+        a = self.active
+        if not self.owns_species(sid) or (a is not None and sid in a.path_ids[: a.stage_index + 1]):
             self.representative_species_id = None
             return True
         return False
@@ -999,11 +1011,13 @@ class Companion:
     # --------------------------------------------------------------- buddy
     @property
     def buddy_id(self) -> int | None:
-        """The species the home card shows: the pinned one, else whoever is being raised."""
+        """The species the home card shows: the pinned one, else whoever is being raised. A pin
+        on the companion's own line is ignored, so the card follows it as it evolves."""
         sid = self.state.representative_species_id
-        if sid is not None and self.state.owns_species(sid):
-            return sid
         a = self.state.active
+        own_line = a is not None and sid in a.path_ids[: a.stage_index + 1] if sid is not None else False
+        if sid is not None and self.state.owns_species(sid) and not own_line:
+            return sid
         return a.current_id if a else None
 
     @property
@@ -1204,6 +1218,78 @@ class Companion:
         self.save()
         return True, f"bought {item['label']}"
 
+    def release_companion(self) -> str | None:
+        """Send the Pokémon being raised to the Pokédex, recorded at the level it reached.
+        Returns its name, or None when there was only an egg."""
+        s = self.state
+        a = s.active
+        if a is None:
+            return None
+        reached = a.path_ids[: max(1, a.stage_index + 1)] or [a.base_id]
+        name = self.display_name()
+        s.dex.append(DexEntry(id=str(uuid.uuid4()), base_id=a.base_id, final_id=reached[-1],
+                              chain_order=list(reached), rarity=a.rarity, caught_at=_now_iso(),
+                              is_shiny=a.is_shiny, nature=a.nature,
+                              names={sid: dict(self.line.names[sid]) for sid in reached if sid in self.line.names}
+                              if self.line else None, released_at=_now_iso(), source="released",
+                              level=self.level()))
+        s.active = None
+        self.line = None
+        return name
+
+    def can_raise(self, sid: int) -> tuple[bool, str]:
+        """Whether a Pokédex record may be taken out and raised. A graduation is a finished
+        trophy and stays one; a caught or released Pokémon can still grow."""
+        entry = self.raisable_record(sid)
+        if entry is None:
+            if any(e.final_id == sid and not e.is_released and not e.is_wild for e in self.state.dex):
+                return False, "already graduated — that one is finished"
+            return False, "not a Pokémon you can raise"
+        if self.wallet < FRESH_EGG_PRICE:
+            what = (f"letting {self.display_name()} go and " if self.state.active is not None else "")
+            return False, (f"raising this one means {what}skipping a hatch: "
+                           f"{fmt_compact(FRESH_EGG_PRICE)} tokens, and you have {fmt_compact(self.wallet)}")
+        return True, ""
+
+    def raisable_record(self, sid: int):
+        """The newest caught or released record for this species, if there is one."""
+        return next((e for e in sorted(self.state.dex, key=lambda e: e.caught_at or "", reverse=True)
+                     if e.final_id == sid and (e.is_wild or e.is_released)), None)
+
+    def raise_caught(self, sid: int) -> tuple[bool, str]:
+        """Take a caught or released Pokémon out of the Pokédex and raise it. It keeps the IVs,
+        nature and shininess it was caught with — it is the same individual — but starts from
+        scratch at level 5: the level it was met at was never training. It costs a plain egg,
+        because it is bought against the hatch you are giving up: an egg and its surprise stay
+        the free default, and choosing what to raise is the paid alternative. Mid-raise it also
+        releases the companion you had."""
+        s = self.state
+        ok, why = self.can_raise(sid)
+        if not ok:
+            return False, why
+        entry = self.raisable_record(sid)
+        try:
+            line = self.api.line(sid)
+        except PokeAPIError as e:
+            return False, f"PokéAPI unreachable, try again in a moment ({e})"
+        root = line.tree.find(sid) or EvoNode(sid)
+        plan = self._make_plan(root, sid)
+        s.spent_tokens += FRESH_EGG_PRICE              # the price of skipping a hatch
+        released = self.release_companion()            # None when only an egg was set aside
+        s.dex = [e for e in s.dex if e is not entry]   # it leaves the Pokédex to be raised
+        s.active = MonState(base_id=sid, path_ids=[sid], planned_path_ids=plan, stage_index=0,
+                            used_at_stage=0, rarity=entry.rarity, total_forms=len(plan),
+                            is_shiny=entry.is_shiny, nature=entry.nature, ivs=entry.ivs)
+        self.line = line
+        s.egg_usage = 0                                # the egg, if any, is set aside
+        s.pending_hatch_id = None
+        s.reconcile_representative()
+        name = self.display_name()
+        self._emit("raise", species=sid, name=name, released=released, paid=released is not None)
+        self.save()
+        return True, (f"{name} is now your companion" + (f", {released} was released" if released else "")
+                      + f" · {fmt_compact(FRESH_EGG_PRICE)} tokens")
+
     def buy_egg(self, tier: str | None) -> tuple[bool, str]:
         if tier is not None and tier not in ("uncommon", "rare"):
             return False, "egg tiers: plain, uncommon, rare"
@@ -1212,19 +1298,7 @@ class Companion:
             return False, f"not enough tokens: need {price:,}, have {self.wallet:,}"
         s = self.state
         self.state.spent_tokens += price
-        released = None
-        if s.active is not None:
-            a = s.active
-            reached = a.path_ids[: max(1, a.stage_index + 1)] or [a.base_id]
-            released = self.display_name()
-            s.dex.append(DexEntry(id=str(uuid.uuid4()), base_id=a.base_id, final_id=reached[-1],
-                                  chain_order=list(reached), rarity=a.rarity, caught_at=_now_iso(),
-                                  is_shiny=a.is_shiny, nature=a.nature,
-                                  names={sid: dict(self.line.names[sid]) for sid in reached if sid in self.line.names}
-                                  if self.line else None, released_at=_now_iso(), source="released",
-                                  level=self.level()))
-            s.active = None
-            self.line = None
+        released = self.release_companion()
         s.reconcile_representative()      # the released companion may have been the pinned one
         s.egg_usage = 0
         s.egg_tier = tier
