@@ -105,6 +105,14 @@ stats with IVs and the luck behind them; graduated records show their stats at L
 evolution line and records. "‹ Home" / "‹ Pokédex" go back; "Pokédex ›" opens the board.
 Future forms in the evolution line are shown blurred and sharpen as you approach the threshold.
 
+**Battle tab.** Your card — name, level, types, the six stats and a power score — with a
+*Copy card* button that puts the `PT1.…` token on the clipboard. Paste a colleague's token into
+the *Challenger* field (or *Paste* it from the clipboard; a bad card says why inline) and press
+*Battle!*: the same deterministic fight as `poketoken battle`, played out in an arena where both
+sprites face off and the HP bars drain hit by hit (tap the arena to skip to the end), with the
+log underneath and a banner for the result, turns and power. The *Record* card keeps your win and
+loss count and the last ten fights in `battles.json`, outside the game save.
+
 ### Claude Code status line
 
 `poketoken statusline` prints a line such as `⚡ Pikachu 2/3 41% │ 12.3M $4.1 │ 85.2K/min`.
@@ -159,6 +167,7 @@ refuses while one is open.
 | `sprites/`, `cache/` | PokéAPI sprites and responses (species and lines forever, base index 30 days) |
 | `ui.json`, `app.pid`, `app.log` | window size/appearance, running-instance pid, background log |
 | `settings.json`, `notify.log` | notifications on/off, notification backend output |
+| `battles.json` | the Battle tab's record: wins, losses and the last ten fights |
 
 Logs are read from `~/.claude/projects` and `~/.config/claude/projects`, or from
 `CLAUDE_CONFIG_DIR` (comma-separated, `projects` appended) exactly like upstream.

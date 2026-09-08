@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PIL import Image, ImageSequence, ImageTk
 
-from . import companion as C, fmt, instance, notify
+from . import battle as B, battle_ui as BU, companion as C, fmt, instance, notify
 
 LIGHT = dict(bg="#F2F2F7", card="#FFFFFF", sep="#E5E5EA", fill="#E9E9EB", fill2="#F4F4F6",
              label="#1C1C1E", secondary="#6E6E73", tertiary="#AEAEB2",
@@ -42,7 +42,7 @@ STATE_LABEL = {"egg": "Incubating", "sleep": "Sleeping", "idle": "Idle", "workin
                "focus": "In the zone", "tired": "Tired", "levelUp": "Level up!"}
 SPEED = {"egg": None, "sleep": 2.5, "idle": 1.6, "working": 1.0, "focus": 0.6, "tired": 1.8, "levelUp": 0.5}
 FONT_PREFS = ["SF Pro Text", "Helvetica Neue", "Inter", "Segoe UI", "Ubuntu", "Liberation Sans", "DejaVu Sans"]
-TABS = [("home", "Home"), ("dex", "Pokédex"), ("shop", "Shop"), ("bag", "Bag")]
+TABS = [("home", "Home"), ("dex", "Pokédex"), ("shop", "Shop"), ("bag", "Bag"), ("battle", "Battle")]
 TYPE_COLORS = {"normal": "#A8A77A", "fire": "#EE8130", "water": "#6390F0", "electric": "#E4B90E", "grass": "#7AC74C",
                "ice": "#6FBFBC", "fighting": "#C22E28", "poison": "#A33EA1", "ground": "#D4A94A", "flying": "#A98FF3",
                "psychic": "#F95587", "bug": "#A6B91A", "rock": "#B6A136", "ghost": "#735797", "dragon": "#6F35FC",
@@ -331,6 +331,7 @@ class PokeWindow:
         # Tk root, Tk would be torn down from a non-main thread (Tcl_AsyncDelete abort).
         app, q, lock = self.app, self.q, self.lock
         extra = ((self.detail, self._species_shiny(self.detail)),) if self.detail else ()
+        extra += self._battle_extra()                                  # the challenger's sprite, if a card is loaded
         detail = self.detail
 
         def work():
@@ -673,7 +674,7 @@ class PokeWindow:
                 y = self.draw_species(y, x0, cw)
             else:
                 y = {"home": self.draw_home, "dex": self.draw_dex, "shop": self.draw_shop,
-                     "bag": self.draw_bag}[self.tab](y, x0, cw)
+                     "bag": self.draw_bag, "battle": self.draw_battle}[self.tab](y, x0, cw)
             y = self.draw_footer(y, x0, cw)
         if self.toast:
             self.draw_toast(w)
@@ -1263,6 +1264,399 @@ class PokeWindow:
             if i < len(items) - 1:
                 self.sep(x0 + 66, ry + 67, cw - 82)
             ry += 68
+        return y + h + 12
+
+    # --------------------------------------------------------------- battle
+    def _battle(self) -> BU.BattleState:
+        """The tab's state, created on first use so the tab stays self-contained."""
+        st = self.__dict__.get("battle_state")
+        if st is None:
+            st = self.battle_state = BU.BattleState()
+        return st
+
+    def _battle_extra(self) -> tuple:
+        """Extra (species, shiny) for refresh(): the challenger's sprite once a card is loaded."""
+        key = BU.sprite_key(self._battle().challenger)
+        return (key,) if key else ()
+
+    def _battle_entry(self) -> tk.Entry:
+        """The paste field: one tk.Entry, a child of the canvas, shown through a window item that
+        draw_battle re-creates on every render. delete("all") drops the item and unmaps the widget,
+        so it never lingers on other tabs; the widget (and its text) survives."""
+        e = self.__dict__.get("battle_entry")
+        if e is None:
+            e = self.battle_entry = tk.Entry(self.c, bd=0, highlightthickness=0, relief="flat", font=self.F["sub"])
+            e.bind("<Return>", lambda ev: self._battle_load())
+        e.configure(bg=self.P["fill"], fg=self.P["label"], insertbackground=self.P["label"],
+                    selectbackground=self.P["blue"], selectforeground=self.P["onaccent"])
+        return e
+
+    def _battle_my_card(self) -> dict | None:
+        a = self.app.companion.state.active
+        meta = (self.payload or {}).get("meta", {}).get(a.current_id) if a else None
+        return BU.own_card(self.app.companion, meta, self.app.dir)
+
+    def _battle_button(self, x, y, w, h, label, tag, handler, style="tinted") -> None:
+        """A button() that runs `handler` on click instead of the Shop's arm-then-confirm _act
+        (nothing here spends tokens)."""
+        self.button(x, y, w, h, label, tag, style)
+        if style != "disabled":
+            self.c.tag_bind(tag, "<Button-1>", lambda e: handler())
+
+    def _battle_static_img(self, path, box: int):
+        """Challenger sprite for the arena, fill-scaled like the companion: crop to the visible
+        pixels, largest whole-number scale that fits, centred on the card colour."""
+        if not path:
+            return None
+        key = ("arena", str(path), box, self.dark)
+        if key in self.images:
+            return self.images[key]
+        try:
+            im = Image.open(path).convert("RGBA")
+        except (OSError, ValueError):
+            return None
+        bbox = im.getbbox()
+        if bbox:
+            im = im.crop(bbox)
+        target = box - 2 * SPRITE_PAD
+        scale = fit_scale(im.width, im.height, target)
+        if scale >= 1:
+            im = im.resize((im.width * scale, im.height * scale), Image.NEAREST)
+        else:
+            im.thumbnail((target, target), Image.LANCZOS)
+        canvas = Image.new("RGBA", (box, box), _rgb(self.P["card"]))
+        canvas.alpha_composite(im, ((box - im.width) // 2, (box - im.height) // 2))
+        ph = self.images[key] = ImageTk.PhotoImage(canvas)
+        return ph
+
+    def _battle_copy(self) -> None:
+        card = self._battle_my_card()
+        if card is None:
+            self._toast("No card yet — hatch your egg first")
+        else:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(B.encode_card(card))
+            self._toast("Card copied — send it to a colleague")
+        self.render()
+
+    def _battle_paste(self) -> None:
+        try:
+            text = self.root.clipboard_get()
+        except tk.TclError:
+            self._toast("Clipboard is empty")
+            self.render()
+            return
+        self._battle_load(text)
+
+    def _battle_reset(self) -> None:
+        """Drop the current fight (new card, Clear): cancel its timer, forget the result."""
+        st = self._battle()
+        if st.job:
+            self.root.after_cancel(st.job)
+        st.job = None
+        st.reset_fight()
+
+    def _battle_load(self, text: str | None = None) -> None:
+        """Decode the card in the paste field (`text` fills the field first); a bad card shows
+        decode_card's message inline."""
+        st = self._battle()
+        e = self._battle_entry()
+        if text is not None:
+            e.delete(0, "end")
+            e.insert(0, text.strip())
+        raw = e.get().strip()
+        self._battle_reset()
+        st.challenger, st.error = None, ""
+        if raw:
+            try:
+                st.challenger = B.decode_card(raw)
+            except ValueError as ex:
+                st.error = str(ex)
+        self.render()
+        if st.challenger:
+            self.refresh()                     # fetches the challenger's sprite
+
+    def _battle_clear(self) -> None:
+        st = self._battle()
+        self._battle_entry().delete(0, "end")
+        self._battle_reset()
+        st.challenger, st.error = None, ""
+        self.render()
+
+    def _battle_start(self) -> None:
+        """Snapshot my card, fetch the type chart off-thread, then simulate and animate."""
+        st = self._battle()
+        if st.pending:
+            return
+        if st.challenger is None:
+            self._battle_load()
+            if st.challenger is None:
+                return
+        mine = self._battle_my_card()
+        if mine is None:
+            self._toast("You need a hatched Pokémon to battle")
+            self.render()
+            return
+        self._battle_reset()
+        st.mine, st.pending = mine, True
+        api, q = self.app.api, st.q                # never `self` in the thread (see refresh)
+
+        def work():
+            try:
+                q.put(("chart", api.type_chart()))
+            except Exception as ex:  # noqa: BLE001
+                q.put(("err", repr(ex)))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.render()
+        st.job = self.root.after(100, self._battle_poll)
+
+    def _battle_poll(self) -> None:
+        st = self._battle()
+        st.job = None
+        try:
+            kind, payload = st.q.get_nowait()
+        except queue.Empty:
+            st.job = self.root.after(100, self._battle_poll)
+            return
+        st.pending = False
+        if kind != "chart" or st.mine is None or st.challenger is None:
+            self.app.log(f"battle: type chart unavailable: {payload}")
+            st.error = "PokéAPI unreachable — the type chart could not be loaded, try again later"
+            self.render()
+            return
+        st.result = B.simulate(st.mine, st.challenger, payload)
+        st.schedule = BU.hp_schedule(st.result, st.mine, st.challenger)
+        st.step = 0
+        self.render()
+        region = str(self.c.cget("scrollregion")).split()
+        if self.tab == "battle" and len(region) == 4 and float(region[3]) > 0:     # bring the arena into view
+            self.c.yview_moveto(max(0.0, (st.arena_y - 10) / float(region[3])))
+        st.job = self.root.after(BU.tick_ms(len(st.schedule)), self._battle_tick)
+
+    def _battle_tick(self) -> None:
+        st = self._battle()
+        st.job = None
+        if st.result is None:
+            return
+        st.step += 1
+        if st.finished or self.tab != "battle" or self.detail is not None or self.compact:
+            self._battle_finish()              # the arena is not on screen: jump to the end
+            return
+        self.render()
+        st.job = self.root.after(BU.tick_ms(len(st.schedule)), self._battle_tick)
+
+    def _battle_finish(self) -> None:
+        """Skip to the end of the fight (click on the arena, tab change) and record it once."""
+        st = self._battle()
+        if st.job:
+            self.root.after_cancel(st.job)
+        st.job = None
+        if st.result is None:
+            return
+        st.step = len(st.schedule) - 1
+        if not st.recorded:
+            st.recorded = True
+            st.history = BU.append_history(self.app.dir, BU.record_from_result(st.result, st.mine, st.challenger))
+        self.render()
+
+    def _battle_card_rows(self, x, w, cy, card, paths) -> int:
+        """One card's summary: sprite, name, level and trainer, type pills, the six stats."""
+        box = LINE_SPRITE
+        key = BU.sprite_key(card)
+        ph = self.img(paths.get(("static",) + key) if key else None, box, "card")
+        if ph:
+            self.c.create_image(x + box / 2, cy + box / 2, image=ph)
+        else:
+            self.c.create_oval(x + 4, cy + 4, x + box - 4, cy + box - 4, fill=self.P["fill"], outline="")
+            self.text(x + box / 2, cy + box / 2, "?", "title2", "tertiary", anchor="center")
+        tx, tw = x + box + 12, w - box - 12
+        shiny = bool(card.get("shiny"))
+        self.text(tx, cy, self._ellipsize(card["name"] + ("  ✦" if shiny else ""), "headline", tw), "headline",
+                  "yellow" if shiny else "label")
+        sub = f"Lv {card['level']} · {card.get('trainer', '?')}" + (f" · {str(card['nature']).title()}" if card.get("nature") else "")
+        self.text(tx, cy + 20, self._ellipsize(sub, "caption", tw), "caption", "secondary")
+        px = tx
+        for t in card["types"]:
+            px += self.pill(px, cy + 38, t.title(), TYPE_COLORS.get(t, "gray")) + 6
+        cy += max(box, 60) + 8
+        each = w / 6
+        for i, (k, lbl) in enumerate(zip(C.STAT_KEYS, ("HP", "Atk", "Def", "SpA", "SpD", "Spe"))):
+            cx = x + each * i + each / 2
+            self.text(cx, cy, lbl, "caption", "tertiary", anchor="n")
+            self.text(cx, cy + 13, str(card["stats"][k]), "headline", "label", anchor="n")
+        return cy + 36
+
+    def draw_battle(self, y, x0, cw) -> int:
+        """Battle tab: my card (copy), a challenger card (paste), the arena with depleting HP
+        bars, the fight log, the result banner and the record of the last fights."""
+        st = self._battle()
+        s = self.app.companion.state
+        paths = self.payload["paths"] if self.payload else {}
+        mine = self._battle_my_card()
+
+        # ---- YOUR CARD
+        card = self.card(x0, y, cw, 10)
+        cy = y + 12
+        self.text(x0 + 18, cy, "YOUR CARD", "captionB", "secondary")
+        if mine:
+            self.text(x0 + cw - 18, cy, f"power {B.power_score(mine)}", "caption", "tertiary", anchor="ne")
+        cy += 22
+        if s.active is None:
+            self.text(x0 + 18, cy, "Still an egg", "headline", "label")
+            cy += 22
+            for ln in ("A battle card snapshots a hatched Pokémon: name, level, types and stats.",
+                       "Spend tokens to hatch your egg, then copy your card here."):
+                self.text(x0 + 18, cy, self._ellipsize(ln, "caption", cw - 36), "caption", "secondary")
+                cy += 16
+            cy += 6
+        elif mine is None:
+            failed = s.active.current_id in (self.payload or {}).get("meta_failed", set()) and not self.busy
+            self.text(x0 + 18, cy, "Stats unavailable offline — the card needs PokéAPI" if failed else "Loading stats…",
+                      "sub", "tertiary")
+            cy += 28
+        else:
+            cy = self._battle_card_rows(x0 + 18, cw - 36, cy, mine, paths)
+            bw = self.measure("Copy card", "captionB") + 28
+            self._battle_button(x0 + 18, cy, bw, 26, "Copy card", "bt:copy", self._battle_copy, "tinted")
+            self.text(x0 + 18 + bw + 10, cy + 13, self._ellipsize("puts your PT1. token on the clipboard", "caption", cw - 54 - bw),
+                      "caption", "tertiary", anchor="w")
+            cy += 38
+        self.fit_card(card, x0, y, cw, cy - y)
+        y = cy + 10
+
+        # ---- CHALLENGER
+        card = self.card(x0, y, cw, 10)
+        cy = y + 12
+        self.text(x0 + 18, cy, "CHALLENGER", "captionB", "secondary")
+        if st.challenger:
+            self.text(x0 + cw - 18, cy, f"power {B.power_score(st.challenger)}", "caption", "tertiary", anchor="ne")
+        cy += 22
+        pw = self.measure("Paste", "captionB") + 28
+        fx, fw, fh = x0 + 18, cw - 36 - pw - 8, 30
+        self.rrect(fx, cy, fx + fw, cy + fh, 9, fill="fill")
+        self.c.create_window(fx + 10, cy + 4, window=self._battle_entry(), anchor="nw", width=max(20, fw - 20), height=fh - 8)
+        self._battle_button(fx + fw + 8, cy + 2, pw, 26, "Paste", "bt:paste", self._battle_paste, "tinted")
+        cy += fh + 10
+        if st.error:
+            self.text(x0 + 18, cy, self._ellipsize("✕ " + st.error, "caption", cw - 36), "caption", "red")
+            cy += 20
+        if st.challenger:
+            cy = self._battle_card_rows(x0 + 18, cw - 36, cy, st.challenger, paths)
+            bw = max(84, self.measure("Battle!", "captionB") + 28)
+            if s.active is None:
+                self._battle_button(x0 + 18, cy, bw, 26, "Battle!", "bt:go", self._battle_start, "disabled")
+                hint = "hatch your egg first"
+            elif mine is None:
+                self._battle_button(x0 + 18, cy, bw, 26, "Battle!", "bt:go", self._battle_start, "disabled")
+                hint = "waiting for your stats"
+            elif st.pending:
+                self._battle_button(x0 + 18, cy, bw, 26, "Loading…", "bt:go", self._battle_start, "disabled")
+                hint = "fetching the type chart"
+            else:
+                self._battle_button(x0 + 18, cy, bw, 26, "Rematch" if st.result else "Battle!", "bt:go", self._battle_start, "filled")
+                hint = ""
+            cw_ = self.measure("Clear", "captionB") + 28
+            self._battle_button(x0 + cw - 18 - cw_, cy, cw_, 26, "Clear", "bt:clear", self._battle_clear, "tinted")
+            if hint:
+                self.text(x0 + 18 + bw + 10, cy + 13, hint, "caption", "tertiary", anchor="w")
+            cy += 38
+        elif not st.error:
+            self.text(x0 + 18, cy, self._ellipsize("Paste a colleague's PT1. card, then press Battle!", "caption", cw - 36),
+                      "caption", "tertiary")
+            cy += 22
+        self.fit_card(card, x0, y, cw, cy - y)
+        y = cy + 10
+
+        # ---- ARENA, LOG, RESULT
+        res = st.result
+        if res and st.mine and st.challenger:
+            hp_a, hp_b = st.schedule[min(st.step, len(st.schedule) - 1)]
+            box = MINI_BOX
+            st.arena_y = y
+            card = self.card(x0, y, cw, 10, tags=("arena",))
+            self.c.tag_bind("arena", "<Button-1>", lambda e: self._battle_finish())
+            if not st.finished:
+                self._hand("arena")
+            cy = y + 12
+            self.text(x0 + 18, cy, "ARENA", "captionB", "secondary", tags=("arena",))
+            shown = min(st.step, len(res["log"]))
+            turn = res["log"][shown - 1].split(":", 1)[0][1:] if shown else "0"
+            self.text(x0 + cw - 18, cy, f"turn {turn} of {res['turns']}" + ("" if st.finished else "  ·  tap to skip"),
+                      "caption", "tertiary", anchor="ne", tags=("arena",))
+            cy += 22
+            half = (cw - 36) / 2
+            lx, rx = x0 + 18 + half / 2, x0 + 18 + half * 1.5
+            self.sprite_draw_box = box
+            self.sprite_subject = ("mon",) + (BU.sprite_key(st.mine) or (0, False))
+            self.sprite_item = self.c.create_image(lx, cy + box / 2, image="", tags=("arena",))
+            key = BU.sprite_key(st.challenger)
+            ph = self._battle_static_img(paths.get(("static",) + key) if key else None, box)
+            if ph:
+                self.c.create_image(rx, cy + box / 2, image=ph, tags=("arena",))
+            else:
+                self.text(rx, cy + box / 2, "?", "title", "tertiary", anchor="center", tags=("arena",))
+            self.text(x0 + 18 + half, cy + box / 2, "VS", "title2", "tertiary", anchor="center", tags=("arena",))
+            cy += box + 4
+            bw = half - 28
+            for cx, c_, hp in ((lx, st.mine, hp_a), (rx, st.challenger, hp_b)):
+                mx = int(c_["stats"]["hp"])
+                self.text(cx, cy, self._ellipsize(c_["name"], "captionB", half - 12), "captionB", "label", anchor="n", tags=("arena",))
+                self.capsule(cx - bw / 2, cy + 20, bw, 8, hp / mx if mx else 0, BU.hp_color(hp / mx if mx else 0))
+                self.text(cx, cy + 32, "fainted" if hp <= 0 else f"{hp} / {mx} HP", "caption", "red" if hp <= 0 else "secondary",
+                          anchor="n", tags=("arena",))
+            cy += 54
+            self.fit_card(card, x0, y, cw, cy - y)
+            y = cy + 10
+
+            if st.finished:
+                bn = BU.banner(res, st.mine, st.challenger)
+                colr = "green" if bn["won"] else "red"
+                self.rrect(x0, y, x0 + cw, y + 76, 16, fill=_blend(self.P[colr], self.P["card"], 0.82 if not self.dark else 0.7))
+                self.text(x0 + cw / 2, y + 10, bn["title"], "title2", colr, anchor="n")
+                self.text(x0 + cw / 2, y + 36, self._ellipsize(bn["detail"], "caption", cw - 24), "caption", "label", anchor="n")
+                self.text(x0 + cw / 2, y + 54, bn["power"], "caption", "secondary", anchor="n")
+                y += 76 + 10
+
+            lines = res["log"][max(0, shown - 6):shown]
+            h = 12 + 20 + 17 * max(1, len(lines)) + 10
+            self.card(x0, y, cw, h)
+            self.text(x0 + 18, y + 12, "BATTLE LOG", "captionB", "secondary")
+            self.text(x0 + cw - 18, y + 12, f"{shown} of {len(res['log'])} hits", "caption", "tertiary", anchor="ne")
+            ly = y + 32
+            if not lines:
+                self.text(x0 + 18, ly, "The fight begins…", "caption", "tertiary")
+            for ln in lines:
+                left, right = BU.hit_row(ln)
+                rw = self.measure(right, "caption") + 8 if right else 0
+                if right:
+                    self.text(x0 + cw - 18, ly, right, "caption", "tertiary", anchor="ne")
+                self.text(x0 + 18, ly, self._ellipsize(left, "caption", cw - 36 - rw), "caption",
+                          "label" if BU.is_own_hit(ln, st.mine["name"]) else "secondary")
+                ly += 17
+            y += h + 10
+
+        # ---- RECORD
+        if st.history is None:
+            st.history = BU.load_history(self.app.dir)
+        rows = list(reversed(st.history))
+        wins, losses = BU.tally(st.history)
+        h = 12 + 22 + (38 * len(rows) if rows else 22) + 6
+        self.card(x0, y, cw, h)
+        self.text(x0 + 18, y + 12, "RECORD", "captionB", "secondary")
+        self.text(x0 + cw - 18, y + 12, f"{wins} W · {losses} L", "captionB", "label", anchor="ne")
+        ry = y + 34
+        if not rows:
+            self.text(x0 + 18, ry, "No battles yet", "sub", "tertiary")
+        for i, r in enumerate(rows):
+            self.dot(x0 + 22, ry + 9, 3.5, "green" if r.get("won") else "red")
+            right = f"{'won' if r.get('won') else 'lost'} · {r.get('turns', '?')} turns · {r.get('date', '')}"
+            self.text(x0 + cw - 18, ry + 1, right, "caption", "secondary", anchor="ne")
+            left = f"{r.get('opponent', '?')} · {r.get('trainer', '?')}"
+            self.text(x0 + 32, ry, self._ellipsize(left, "body", cw - 60 - self.measure(right, "caption")), "body", "label")
+            if i < len(rows) - 1:
+                self.sep(x0 + 18, ry + 30, cw - 36)
+            ry += 38
         return y + h + 12
 
     # -------------------------------------------------------------- compact
