@@ -13,9 +13,6 @@ evolve it through its real evolution line, graduate it into your Pokédex, start
   <img src="docs/screenshots/shop.png" width="230" alt="Shop">
   <img src="docs/screenshots/dex.png" width="230" alt="Pokédex">
 </p>
-<p align="center">
-  <img src="docs/screenshots/home-wide.png" width="720" alt="Home, maximised: cards flow into balanced columns">
-</p>
 
 > Unofficial, non-commercial Pokémon fan project. Sprites and species data come from
 > [PokéAPI](https://pokeapi.co/) at runtime and are not bundled. See [License](#license--disclaimer).
