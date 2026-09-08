@@ -1,6 +1,8 @@
 """Battle cards: encoding, validation, deterministic simulation, type matchups."""
 from __future__ import annotations
 
+import base64
+
 import random
 import sys
 import tempfile
@@ -144,3 +146,45 @@ class CliOfflineTests(unittest.TestCase):
             self.assertEqual(rc_c, 1)                       # egg (no Pokémon) or offline: both rc 1, no crash
         finally:
             PokeAPI.type_chart, PokeAPI.pokemon, PokeAPI.base_index, PokeAPI.line = saved
+
+
+class HostileCardTests(unittest.TestCase):
+    """A card comes from another person, so decoding must survive a malicious one."""
+
+    def test_a_big_compression_bomb_never_reaches_the_inflater(self):
+        import zlib
+        payload = b'{"v":1,"x":"' + b"A" * 60_000_000 + b'"}'
+        token = B.CARD_PREFIX + base64.urlsafe_b64encode(zlib.compress(payload, 9)).decode().rstrip("=")
+        self.assertLess(len(token), 200_000, "the token itself is small — that is the point of the attack")
+        with self.assertRaises(ValueError) as caught:
+            B.decode_card(token)
+        self.assertIn("too long", str(caught.exception))
+
+    def test_a_bomb_that_slips_under_the_length_cap_is_stopped_while_inflating(self):
+        """The nastier shape: a token small enough to look ordinary that still inflates past the
+        byte cap. It must be refused part-way, not decompressed in full."""
+        import zlib
+        payload = b'{"v":1,"x":"' + b"A" * 2_000_000 + b'"}'
+        body = base64.urlsafe_b64encode(zlib.compress(payload, 9)).decode().rstrip("=")
+        token = B.CARD_PREFIX + body
+        self.assertLess(len(token), B.MAX_CARD_CHARS, "slips under the length cap")
+        self.assertGreater(len(payload), B.MAX_CARD_BYTES * 10, "but would inflate far past the byte cap")
+        with self.assertRaises(ValueError) as caught:
+            B.decode_card(token)
+        self.assertIn("larger than any real card", str(caught.exception))
+
+    def test_an_absurdly_long_token_is_refused_early(self):
+        with self.assertRaises(ValueError) as caught:
+            B.decode_card(B.CARD_PREFIX + "A" * (B.MAX_CARD_CHARS + 1))
+        self.assertIn("too long", str(caught.exception))
+
+    def test_a_real_card_is_nowhere_near_the_caps(self):
+        c = card("Sparky", ["electric"])
+        token = B.encode_card(c)
+        self.assertLess(len(token), 600)
+        self.assertEqual(B.decode_card(token), c)
+
+    def test_junk_and_truncated_tokens_raise_cleanly(self):
+        for bad in ("PT1.@@@@", "PT1." + base64.urlsafe_b64encode(b"not zlib").decode(), "PT1."):
+            with self.assertRaises(ValueError):
+                B.decode_card(bad)

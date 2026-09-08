@@ -20,6 +20,11 @@ from . import companion as C
 CARD_PREFIX = "PT1."
 CARD_VERSION = 2            # 2 carries base stats and IVs, so a card can be re-levelled exactly
 FLAT_LEVEL = 50             # the level both sides are scaled to for a fair fight (VGC flat rules)
+# a card arrives from another person, so treat it as hostile input: a real one is ~300 characters
+# and inflates to well under a kilobyte. These caps stop a crafted token from inflating to
+# gigabytes in memory before the contents are ever checked.
+MAX_CARD_CHARS = 4096
+MAX_CARD_BYTES = 64 * 1024
 MOVE_POWER = 60
 MAX_TURNS = 100
 STAB = 1.5
@@ -83,10 +88,18 @@ def decode_card(text: str) -> dict:
     text = text.strip()
     if not text.startswith(CARD_PREFIX):
         raise ValueError("not a PokeToken card (expected PT1.…)")
+    if len(text) > MAX_CARD_CHARS:
+        raise ValueError("that is too long to be a card")
     body = text[len(CARD_PREFIX):]
     body += "=" * (-len(body) % 4)
     try:
-        card = json.loads(zlib.decompress(base64.urlsafe_b64decode(body)))
+        raw = base64.urlsafe_b64decode(body)
+        # bounded inflate: whatever the compression ratio claims, stop at MAX_CARD_BYTES
+        unzip = zlib.decompressobj()
+        data = unzip.decompress(raw, MAX_CARD_BYTES)
+        if unzip.unconsumed_tail:
+            raise ValueError("card is far larger than any real card")
+        card = json.loads(data)
     except (ValueError, zlib.error) as e:
         raise ValueError(f"corrupt card: {e}") from e
     return validate_card(card)

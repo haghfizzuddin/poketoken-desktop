@@ -15,6 +15,12 @@ evolve it through its real evolution line, graduate it into your Pokédex, start
   <img src="docs/screenshots/shop.png" width="230" alt="Shop">
   <img src="docs/screenshots/dex.png" width="230" alt="Pokédex">
 </p>
+<p align="center">
+  <img src="docs/screenshots/home-dark.png" width="230" alt="Home in dark mode">
+  <img src="docs/screenshots/compact.png" width="164" alt="Compact view: just the companion">
+</p>
+
+<sub align="center">Screenshots are taken against a synthetic log fixture, not a real account.</sub>
 
 > Unofficial, non-commercial Pokémon fan project. Sprites and species data come from
 > [PokéAPI](https://pokeapi.co/) at runtime and are not bundled. See [License](#license--disclaimer).
