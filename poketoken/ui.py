@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PIL import Image, ImageSequence, ImageTk
 
-from . import battle as B, battle_ui as BU, companion as C, fmt, instance, notify
+from . import battle as B, battle_ui as BU, companion as C, fmt, instance, layout as L, notify
 
 LIGHT = dict(bg="#F2F2F7", card="#FFFFFF", sep="#E5E5EA", fill="#E9E9EB", fill2="#F4F4F6",
              label="#1C1C1E", secondary="#6E6E73", tertiary="#AEAEB2",
@@ -215,6 +215,8 @@ class PokeWindow:
         self.settled_geometry: str | None = None   # set from <Configure>, i.e. after the WM applied it
         self.poll_job = self.periodic_job = None
         self.refresh_again = False
+        self.sync_state = "busy"                   # busy | ok | error — the header indicator
+        self.last_ok: float | None = None
         self.want_quit = False                     # set by SIGTERM / `poketoken close`
 
         r = self.root = tk.Tk()
@@ -327,6 +329,8 @@ class PokeWindow:
             return
         self.busy = True
         self.refresh_again = False
+        self.sync_state = "busy"
+        self._draw_sync()
         # The worker must not capture `self`: if it ended up holding the last reference to the
         # Tk root, Tk would be torn down from a non-main thread (Tcl_AsyncDelete abort).
         app, q, lock = self.app, self.q, self.lock
@@ -373,11 +377,13 @@ class PokeWindow:
                 self.busy = False
                 if kind == "ok":
                     self.payload = payload
+                    self.sync_state, self.last_ok = "ok", payload["at"]
                     for ev in payload["events"]:
                         self._toast(self._event_text(ev))
                     self.render()
                 else:
                     self.app.log(f"ui refresh error: {payload}")
+                    self.sync_state = "error"
                     self._toast("Refresh failed — see events.log")
                     self.render()
                 if self.refresh_again:
@@ -670,6 +676,10 @@ class PokeWindow:
             y = self.draw_compact(w)
         else:
             y = self.draw_header(w)
+            narrow = self.detail is not None or self.tab in ("shop", "bag", "battle")
+            if narrow:                                   # reading pages stay a readable width, centred
+                cw = min(cw, 560)
+                x0 = (w - cw) / 2
             if self.detail is not None:
                 y = self.draw_species(y, x0, cw)
             else:
@@ -700,9 +710,11 @@ class PokeWindow:
                                outline="", tags=("more",))
         self.c.tag_bind("more", "<Button-1>", self._show_menu)
         self._hand("more")
+        self._draw_sync(w)
         y += 40
-        # segmented control
-        x, segw, h = 16, w - 32, 30
+        # segmented control (capped and centred when the window is wide)
+        segw = min(w - 32, 560)
+        x, h = (w - segw) / 2, 30
         self.rrect(x, y, x + segw, y + h, 9, fill="seg")
         n = len(TABS)
         each = (segw - 4) / n
@@ -719,18 +731,90 @@ class PokeWindow:
             self._hand(tag)
         return y + h + 10
 
+    def _draw_sync(self, w: int | None = None) -> None:
+        """Header status: green dot Live · time, amber Refreshing…, red Sync failed — plus Refresh."""
+        c = self.c
+        c.delete("sync")
+        if self.compact:
+            return
+        w = w or max(240, c.winfo_width() or 392)
+        colour, label = {"ok": ("green", "Live"), "busy": ("orange", "Refreshing…"),
+                         "error": ("red", "Sync failed")}.get(self.sync_state, ("gray", "…"))
+        if self.sync_state == "ok" and self.last_ok:
+            label += " · " + datetime.fromtimestamp(self.last_ok).strftime("%H:%M")
+        elif self.sync_state == "error" and self.last_ok:
+            label += " · last " + datetime.fromtimestamp(self.last_ok).strftime("%H:%M")
+        x = w - 30 - 14 - 12                                   # left of the ⋯ button
+        cy = 14 + 16
+        if self.sync_state != "busy":
+            rw = self.measure("Refresh", "captionB")
+            c.create_text(x, cy, text="Refresh", font=self.F["captionB"], fill=self.P["blue"], anchor="e", tags=("sync", "refresh"))
+            c.tag_bind("refresh", "<Button-1>", lambda e: self.refresh())
+            self._hand("refresh")
+            x -= rw + 14
+        c.create_text(x, cy, text=label, font=self.F["caption"], fill=self.P["secondary"], anchor="e", tags=("sync",))
+        x -= self.measure(label, "caption") + 10
+        c.create_oval(x - 4, cy - 4, x + 4, cy + 4, fill=self.P[colour], outline="", tags=("sync",))
+
     # ------------------------------------------------------------------ home
     def draw_home(self, y, x0, cw) -> int:
-        comp, s = self.app.companion, self.app.companion.state
-        snap = self.payload["snap"] if self.payload else None
-        state = comp.display_state
-        accent = STATE_COLOR.get(state, "blue")
+        """Home is a set of cards. Narrow window: one column in a fixed order. Wide window: the
+        companion and its evolution line pin to the first column, the rest flow into the
+        shortest column (masonry) so the page stays balanced when maximised."""
+        w = cw + 2 * x0
+        cols = L.columns_for(w)
+        blocks = self._home_blocks()
+        if cols == 1:
+            for fn, _pin in blocks:
+                y = fn(y, x0, cw) + 10
+            return y - 10
+        geo = L.column_geometry(w, cols)
+        drawn = []                                             # (items, height) per block, drawn at y=0
+        for fn, pin in blocks:
+            col = pin if pin is not None else 0
+            before = set(self.c.find_all())
+            bottom = fn(0, geo[col][0], geo[col][1])
+            items = [i for i in self.c.find_all() if i not in before]
+            drawn.append((items, bottom, col if pin is not None else None))
+        pinned = {i: c for i, (_, _, c) in enumerate(drawn) if c is not None}
+        placed = L.masonry([h for _, h, _ in drawn], cols, pinned)
+        bottom_y = y
+        for (items, h, _), (col, off) in zip(drawn, placed):
+            # unpinned blocks were drawn in column 0; shift them to their column
+            dx = geo[col][0] - geo[0][0]
+            for item in items:
+                self.c.move(item, dx, y + off)
+            bottom_y = max(bottom_y, y + off + h)
+        return bottom_y
 
+    def _home_blocks(self) -> list:
+        """(draw function, pinned column or None) in narrow-window order."""
+        comp = self.app.companion
+        snap = self.payload["snap"] if self.payload else None
+        blocks = []
         enc = comp.current_encounter()
         if enc:
-            y = self.draw_encounter_card(y, x0, cw, enc) + 10
+            blocks.append((lambda y, x, w: self.draw_encounter_card(y, x, w, enc), None))
+        blocks.append((self.draw_hero, 0))
+        if comp.state.active and comp.line:
+            s = comp.state
+            accent = STATE_COLOR.get(comp.display_state, "blue")
+            blocks.append((lambda y, x, w: self.draw_evo_line(
+                y, x, w, [(sid, st == "current") for sid, st in comp.line_items()],
+                lambda cid: comp.line.name(cid, s.language), accent, clickable=False), 0))
+        blocks.append((self.draw_today, None))
+        blocks.append((self.draw_rewards, None))
+        if snap and snap.models_cost_today:
+            blocks.append((self.draw_cost_by_model, None))
+        if snap and snap.projects_today:
+            blocks.append((self.draw_projects, None))
+        blocks.append((self.draw_activity, None))
+        return blocks
 
-        # hero card
+    def draw_hero(self, y, x0, cw) -> int:
+        comp, s = self.app.companion, self.app.companion.state
+        state = comp.display_state
+        accent = STATE_COLOR.get(state, "blue")
         hero_tag = ("hero",) if s.active else ()
         card = self.card(x0, y, cw, 10, tags=hero_tag)
         cy = y + 10
@@ -783,14 +867,10 @@ class PokeWindow:
             self.text(x0 + cw - 18, cy, "waiting for first usage", "caption", "tertiary", anchor="ne")
         cy += 20
         self.fit_card(card, x0, y, cw, cy - y)
-        y = cy + 10
+        return cy
 
-        # evolution line
-        if s.active and comp.line:
-            y = self.draw_evo_line(y, x0, cw, [(sid, st == "current") for sid, st in comp.line_items()],
-                                   lambda cid: comp.line.name(cid, s.language), accent, clickable=False) + 10
-
-        # today card
+    def draw_today(self, y, x0, cw) -> int:
+        snap = self.payload["snap"] if self.payload else None
         card = self.card(x0, y, cw, 10)
         cy = y + 10
         self.text(x0 + 18, cy, "TODAY", "captionB", "secondary")
@@ -809,28 +889,90 @@ class PokeWindow:
             cy += 16
         cy += 8
         self.fit_card(card, x0, y, cw, cy - y)
-        y = cy + 12
+        return cy
 
-        # activity card
+    def draw_bar_list(self, y, x0, cw, title: str, rows: list, right_title: str = "", colour: str = "blue") -> int:
+        """A card of ranked bars: rows = [(label, fraction, value text)]."""
+        h = 12 + 18 + 24 * max(1, len(rows)) + 8
+        self.card(x0, y, cw, h)
+        self.text(x0 + 18, y + 12, title, "captionB", "secondary")
+        if right_title:
+            self.text(x0 + cw - 18, y + 12, right_title, "caption", "tertiary", anchor="ne")
+        ry = y + 34
+        if not rows:
+            self.text(x0 + 18, ry, "nothing yet today", "caption", "tertiary")
+        label_w = min(cw * 0.36, max([self.measure(r[0], "caption") for r in rows] + [40]) + 6)
+        value_w = max([self.measure(r[2], "captionB") for r in rows] + [30])
+        bar_x = x0 + 18 + label_w + 8
+        bar_w = max(20, cw - 36 - label_w - 8 - value_w - 10)
+        for label, frac, value in rows:
+            self.text(x0 + 18, ry, self._ellipsize(label, "caption", label_w), "caption", "secondary")
+            self.capsule(bar_x, ry + 4, bar_w, 6, frac, colour)
+            self.text(x0 + cw - 18, ry - 1, value, "captionB", "label", anchor="ne")
+            ry += 24
+        return y + h
+
+    def draw_cost_by_model(self, y, x0, cw) -> int:
+        snap = self.payload["snap"]
+        rows_src = L.top_n(snap.models_cost_today, 4)
+        peak = max((v for _, v in rows_src), default=1) or 1
+        rows = [(L.short_model(m), v / peak, fmt.cost(v)) for m, v in rows_src]
+        return self.draw_bar_list(y, x0, cw, "COST BY MODEL", rows, f"today · {fmt.cost(snap.today.cost)}", "green")
+
+    def draw_projects(self, y, x0, cw) -> int:
+        snap = self.payload["snap"]
+        rows_src = L.top_n(snap.projects_today, 5)
+        peak = max((v for _, v in rows_src), default=1) or 1
+        rows = [(name, v / peak, fmt.compact(int(v))) for name, v in rows_src]
+        return self.draw_bar_list(y, x0, cw, "TOKENS BY PROJECT", rows, f"today · {fmt.compact(snap.today.total)}", "blue")
+
+    def draw_rewards(self, y, x0, cw) -> int:
+        """Streak progress toward the next candy, the weekly goal, and what is in the bag."""
+        comp = self.app.companion
+        snap = self.payload["snap"] if self.payload else None
+        today = snap.today_date if snap else comp.today
+        h = 12 + 18 + 2 * 44 + 24 + 8
+        self.card(x0, y, cw, h)
+        self.text(x0 + 18, y + 12, "REWARDS", "captionB", "secondary")
+        n, _, counts = comp.streak(today)
+        nxt_days, nxt_candy = C.next_streak_milestone(n)
+        prev = max([m for m, _ in C.STREAK_MILESTONES if m <= n] + [0])
+        if n >= C.STREAK_MILESTONES[-1][0]:
+            prev = (n // C.STREAK_REPEAT_DAYS) * C.STREAK_REPEAT_DAYS
+        frac = (n - prev) / max(1, nxt_days - prev)
+        ry = y + 34
+        self.text(x0 + 18, ry, f"Streak · {n} day{'s' if n != 1 else ''}" + ("" if counts or not n else " · not yet today"),
+                  "body", "label")
+        self.text(x0 + cw - 18, ry + 2, f"+{nxt_candy} candy at {nxt_days} days", "caption", "secondary", anchor="ne")
+        self.capsule(x0 + 18, ry + 22, cw - 36, 8, frac, "orange")
+        ry += 44
+        g = comp.weekly_goal(today)
+        self.text(x0 + 18, ry, "Weekly goal", "body", "label")
+        if g["target"]:
+            self.text(x0 + cw - 18, ry + 2, f"{fmt.compact(g['current'])} / {fmt.compact(g['target'])} · +5 candy",
+                      "caption", "secondary", anchor="ne")
+            self.capsule(x0 + 18, ry + 22, cw - 36, 8, g["progress"], "green" if g["progress"] >= 1 else "blue")
+        else:
+            self.text(x0 + cw - 18, ry + 2, f"unlocks after {g['weeks_needed']} more week(s)", "caption", "tertiary", anchor="ne")
+            self.capsule(x0 + 18, ry + 22, cw - 36, 8, 0, "blue")
+        ry += 44
+        owned = [f"{C.ITEMS[k]['label']} ×{v}" for k, v in comp.state.inventory.items() if v > 0 and k in C.ITEMS]
+        self.text(x0 + 18, ry, self._ellipsize("Bag: " + (" · ".join(owned) if owned else "empty"), "caption", cw - 36),
+                  "caption", "tertiary")
+        return y + h
+
+    def draw_activity(self, y, x0, cw) -> int:
+        comp, s = self.app.companion, self.app.companion.state
+        snap = self.payload["snap"] if self.payload else None
         rows = []
         if snap:
             tpm = snap.tokens_per_minute
             rows.append(("Burn rate", f"{fmt.compact(int(tpm))}/min · {snap.burn_tier}" if tpm and tpm > 1000 else "quiet"))
-            if snap.models_today:
-                rows.append(("Models", " · ".join(f"{m.replace('claude-', '')} {fmt.compact(n)}"
-                                                  for m, n in list(snap.models_today.items())[:2])))
             if snap.block:
                 mins = (snap.now.timestamp() - (snap.block_start or snap.now.timestamp())) / 60
                 rows.append(("5-hour block", f"{fmt.compact(snap.block.total)} · {fmt.cost(snap.block.cost)} · {mins:.0f} min"))
             rows.append(("This week", f"{fmt.compact(snap.week.total)} · {fmt.cost(snap.week.cost)}"))
             rows.append(("This month", f"{fmt.compact(snap.month.total)} · {fmt.cost(snap.month.cost)}"))
-        if snap:
-            n, _, counts = comp.streak(snap.today_date)
-            nxt_days, nxt_candy = C.next_streak_milestone(n)
-            rows.append(("Streak", f"{n} day{'s' if n != 1 else ''} · +{nxt_candy} candy at {nxt_days}" + ("" if counts else " · not yet today") if n else "none yet"))
-            g = comp.weekly_goal(snap.today_date)
-            rows.append(("Weekly goal", f"{fmt.compact(g['current'])} / {fmt.compact(g['target'])} · {fmt.percent(g['progress'] * 100)}"
-                         if g["target"] else f"unlocks in {g['weeks_needed']} week(s)"))
         rows.append(("Wallet", f"{fmt.compact(comp.wallet)} tokens"))
         grads = sum(1 for e in s.dex if not e.is_released)
         rows.append(("Pokédex", f"{grads} graduated · {len({sid for e in s.dex for sid in e.chain_order})} species"))
@@ -843,7 +985,7 @@ class PokeWindow:
             if i < len(rows) - 1:
                 self.sep(x0 + 18, ry + 37, cw - 36)
             ry += 38
-        return y + h + 12
+        return y + h
 
     def draw_encounter_card(self, y, x0, cw, enc: dict) -> int:
         """A wild Pokémon is waiting: who it is, how likely a catch is, and a throw button."""
@@ -899,7 +1041,7 @@ class PokeWindow:
             return y + 152
         self.text(x0 + 2, y, f"{len(species)} species", "captionB", "secondary")
         y += 20
-        cols = 3
+        cols = max(3, int(cw // 160))
         gap = 10
         cellw = (cw - gap * (cols - 1)) / cols
         cellh = cellw + 30
@@ -1694,13 +1836,9 @@ class PokeWindow:
         return y + 20
 
     def draw_footer(self, y, x0, cw) -> int:
-        at = datetime.fromtimestamp(self.payload["at"]).strftime("%H:%M:%S") if self.payload else "…"
-        self.text(x0 + cw / 2, y + 4, f"Updated {at}  ·  refresh {self.interval}s  ·  Claude Code", "caption", "tertiary", anchor="n")
-        self.text(x0 + cw / 2, y + 20, "Refresh now", "captionB", "blue", anchor="n", tags=("refresh",))
-        self.c.tag_bind("refresh", "<Button-1>", lambda e: self.refresh())
-        self._hand("refresh")
+        self.text(x0 + cw / 2, y + 6, f"auto-refresh every {self.interval} s  ·  Claude Code", "caption", "tertiary", anchor="n")
         self.c.bind("<Button-3>", self._show_menu)
-        return y + 44
+        return y + 30
 
     # ------------------------------------------------------------- animation
     def _start_sprite_animation(self) -> None:

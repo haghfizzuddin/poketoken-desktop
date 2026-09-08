@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 — in progress
+## v0.2.0 — 2026-09-08
 
 ### Game
 - Activity history (120 days) backfilled from every Claude Code log; streaks (a day counts at 1M+ tokens) and a weekly goal (median of your previous weeks, floor 50M).
@@ -10,16 +10,19 @@
 - Ditto disguise (upstream port): 1/128 common multi-stage hatches reveal a Ditto at the first evolution threshold.
 - Wild encounters: a streak day or a personal-best 5-hour block spawns a wild Pokémon; Poké / Great / Ultra Balls in the Shop; capture-rate based catches go straight into the Pokédex.
 - Battle cards: `poketoken card` and `poketoken battle <card>` — deterministic, serverless fights with real type matchups.
+- Battle tab in the window: copy your card, paste a challenger's, watch the fight turn by turn, keep a win/loss record.
 
 ### Window
-- Species page (mini sprite header, stats card, evolution line, records) reachable from Home and from any Pokédex cell; the next evolution form shows blurred and sharpens with progress.
+- Species page (mini sprite header, stats card, evolution line, records) reachable from Home and from any Pokédex cell; the next evolution form shows pixelated and resolves with progress.
+- Header sync indicator (Live / Refreshing / Sync failed) with a Refresh control; Home cards for Rewards, Cost by model and Tokens by project; wide or maximised windows lay Home out in balanced columns.
 - Sprites fill a fixed container (256 / 320 / 384 / 448 px) using whole-number scaling; Home shows the companion, its evolution line and today's usage on the first screen.
 - Encounter card with a Throw button; balls in Shop and Bag; refreshes coalesce; toasts for every event.
 - Desktop notifications (Windows toast through PowerShell, `notify-send` on Linux) with an on/off switch.
 
 ### CLI and platform
 - `app` opens in the background and returns the prompt (`--fg` attaches); `close`, `toggle`, single-instance raise.
-- `history`, `stats`, `encounter`, `card`, `battle`, `notify` commands.
+- `history`, `stats`, `encounter`, `card`, `battle`, `notify`, `timer`, `autostart`, `export`, `import` commands.
+- `timer on` installs a systemd user timer that refreshes every 15 minutes so progress accrues with the window closed; `autostart on` opens the window at Windows sign-in; `export`/`import` move the save between machines.
 - Pricing per model from the current rate card, cache writes split by 5-minute and 1-hour TTL.
 
 ## v0.1.0 — 2026-09-07

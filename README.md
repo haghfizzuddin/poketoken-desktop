@@ -13,6 +13,9 @@ evolve it through its real evolution line, graduate it into your Pokédex, start
   <img src="docs/screenshots/shop.png" width="230" alt="Shop">
   <img src="docs/screenshots/dex.png" width="230" alt="Pokédex">
 </p>
+<p align="center">
+  <img src="docs/screenshots/home-wide.png" width="720" alt="Home, maximised: cards flow into balanced columns">
+</p>
 
 > Unofficial, non-commercial Pokémon fan project. Sprites and species data come from
 > [PokéAPI](https://pokeapi.co/) at runtime and are not bundled. See [License](#license--disclaimer).
@@ -103,7 +106,14 @@ second, so a stray click never spends tokens. Click the companion on Home, or an
 for that species' page: mini sprite and identity, the stats card (level, types, abilities, six
 stats with IVs and the luck behind them; graduated records show their stats at Lv 100), the
 evolution line and records. "‹ Home" / "‹ Pokédex" go back; "Pokédex ›" opens the board.
-Future forms in the evolution line are shown blurred and sharpen as you approach the threshold.
+Future forms in the evolution line are shown pixelated and resolve as you approach the threshold.
+
+The header shows sync state — a green dot with the last refresh time, amber while refreshing,
+red if a refresh failed — next to a Refresh control. Home also has cards for Rewards (streak
+progress to the next candy, the weekly goal, your bag), Cost by model and Tokens by project
+(both for today). Widen or maximise the window and Home flows its cards into two or three
+balanced columns, the Pokédex board gets more cells per row, and reading pages such as Shop,
+Bag and Battle stay at a readable width in the centre; the narrow layout is unchanged.
 
 **Battle tab.** Your card — name, level, types, the six stats and a power score — with a
 *Copy card* button that puts the `PT1.…` token on the clipboard. Paste a colleague's token into

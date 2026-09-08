@@ -475,6 +475,18 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win.set_sprite_box(256); win.set_sprite_box(384); win.root.update()
         win.toggle_compact(); win.set_sprite_box(256); win.set_sprite_box(384); win.toggle_compact()   # compact resizes to default_geometry
         win.toggle_dark(); win.set_tab("home"); grab(win, "win-rich-dark"); win.toggle_dark()
+        win.root.geometry("1180x820"); win.set_tab("home")
+        t0 = time.time()
+        while win.root.winfo_width() < 1000 and time.time() - t0 < 5:
+            win.root.update(); time.sleep(0.05)
+        win.render(); grab(win, "win-rich-wide-home")
+        win.set_tab("dex"); win.root.update(); grab(win, "win-rich-wide-dex")
+        win.set_tab("shop"); win.root.update(); grab(win, "win-rich-wide-shop")
+        win.root.geometry("392x700"); win.set_tab("home")
+        t0 = time.time()
+        while win.root.winfo_width() > 500 and time.time() - t0 < 5:
+            win.root.update(); time.sleep(0.05)
+        win.sync_state = "error"; win._draw_sync(); win.sync_state = "ok"; win._draw_sync()
         win.toggle_compact(); win.root.update(); win._show_menu(Ev(x_root=50, y_root=50)); win.menu.unpost()
         grab(win, "win-rich-compact"); win.toggle_compact()
         win.c.yview_scroll(1, "units"); win.c.yview_scroll(-1, "units")
