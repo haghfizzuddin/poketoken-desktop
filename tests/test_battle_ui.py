@@ -178,6 +178,24 @@ class FormattingTests(unittest.TestCase):
         self.assertEqual(B.decode_card(B.encode_card(mine)), mine)
 
 
+class RecordLineTests(unittest.TestCase):
+    """A record row says who beat whom; the trainer only when it is not you."""
+
+    def test_says_who_beat_whom(self):
+        r = {"mine": "Quagsire", "opponent": "Nidorino", "won": True, "trainer": "haghfizzuddin"}
+        self.assertEqual(BU.record_line(r, me="haghfizzuddin"), "Quagsire beat Nidorino")
+        r["won"] = False
+        self.assertEqual(BU.record_line(r, me="haghfizzuddin"), "Quagsire lost to Nidorino")
+
+    def test_names_another_trainer(self):
+        r = {"mine": "Wooper", "opponent": "Pikachu", "won": False, "trainer": "Ash"}
+        self.assertEqual(BU.record_line(r, me="haghfizzuddin"), "Wooper lost to Pikachu · Ash")
+        self.assertEqual(BU.record_line({**r, "trainer": "?"}, me="x"), "Wooper lost to Pikachu")
+
+    def test_tolerates_old_records(self):
+        self.assertEqual(BU.record_line({"won": True, "turns": 3}), "? beat ?")
+
+
 class StateTests(unittest.TestCase):
     def test_reset_and_finished(self):
         st = BU.BattleState()

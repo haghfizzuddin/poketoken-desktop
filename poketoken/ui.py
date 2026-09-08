@@ -376,7 +376,19 @@ class PokeWindow:
                 with lock:
                     snap = app.tick()
                     events = app.companion.drain_events()
-                paths = resolve_sprites(app, extra)
+                # the species page shows its whole evolution line, so fetch it (and every member's
+                # sprite, in the record's shininess and plain) before the sprites are resolved
+                lines: dict[int, object] = {}
+                chain_extra: tuple = ()
+                if detail is not None:
+                    try:
+                        line = app.api.line_for(detail)
+                        lines[detail] = line
+                        d_shiny = extra[0][1]
+                        chain_extra = tuple((cid, sh) for cid in line.tree.all_ids() for sh in {d_shiny, False})
+                    except Exception as e:  # noqa: BLE001 — the line card falls back to what the record knows
+                        app.log(f"evolution line unavailable for {detail}: {e}")
+                paths = resolve_sprites(app, extra + chain_extra)
                 meta: dict[int, dict] = {}
                 meta_failed: set[int] = set()
                 a = app.companion.state.active
@@ -387,7 +399,7 @@ class PokeWindow:
                         meta_failed.add(sid)
                         app.log(f"pokemon meta unavailable for {sid}: {e}")
                 q.put(("ok", {"snap": snap, "events": events, "paths": paths, "meta": meta,
-                              "meta_failed": meta_failed, "at": time.time()}))
+                              "meta_failed": meta_failed, "lines": lines, "at": time.time()}))
             except Exception as e:  # noqa: BLE001
                 q.put(("err", repr(e)))
 
@@ -741,8 +753,12 @@ class PokeWindow:
         if ph:
             self.c.create_image(cx, cy, image=ph)
         else:
-            self.c.create_oval(cx - 24, cy - 24, cx + 24, cy + 24, fill=self.P["fill"], outline="")
-            self.text(cx, cy, "?", "title2", "tertiary", anchor="center")
+            self._unknown_form(cx, cy)
+
+    def _unknown_form(self, cx, cy) -> None:
+        """The grey '?' disc: a form whose sprite is not on disk yet."""
+        self.c.create_oval(cx - 24, cy - 24, cx + 24, cy + 24, fill=self.P["fill"], outline="")
+        self.text(cx, cy, "?", "title2", "tertiary", anchor="center")
 
     def _ellipsize(self, s: str, font: str, maxw: int) -> str:
         if self.measure(s, font) <= maxw:
@@ -986,7 +1002,9 @@ class PokeWindow:
         comp, s = self.app.companion, self.app.companion.state
         accent = STATE_COLOR.get(comp.display_state, "blue")
         items = [(sid, st == "current") for sid, st in comp.line_items()]
-        remaining = f"{fmt.compact(comp.tokens_to_next)} to " + ("graduate" if comp.is_final_stage else "evolve")
+        # this card owns the companion's progress: how far into the stage, and what is left
+        remaining = (f"{fmt.compact(s.active.used_at_stage)} / {fmt.compact(comp.threshold)}  ·  "
+                     f"{fmt.compact(comp.tokens_to_next)} to " + ("graduate" if comp.is_final_stage else "evolve"))
         return self.draw_evo_line(y, x0, cw, items, lambda cid: comp.line.name(cid, s.language), accent,
                                   clickable=False, progress=comp.progress, remaining=remaining)
     def _natural_size(self, path) -> tuple[int, int]:
@@ -1014,10 +1032,14 @@ class PokeWindow:
         return paths.get(("anim", sid, shiny)) or paths.get(("static", sid, shiny))
 
     def _hero_chrome(self) -> float:
-        """The hero card's height without the sprite: name, pills, the progress rows, padding."""
+        """The hero card's height without the sprite: name, pills, an egg's progress rows, padding.
+        Mirrors draw_hero, which draws progress only for an egg."""
         tight = self.narrow
-        return ((self.pad - 4) + 2 + self.F["title"].metrics("linespace") + (6 if tight else 10)
-                + (26 if tight else 30) + (16 if tight else 18) + (12 if tight else 14) + (16 if tight else 20))
+        active = self.app.companion.state.active is not None
+        head = (self.pad - 4) + 2 + self.F["title"].metrics("linespace") + (6 if tight else 10)
+        if active:
+            return head + 22 + (12 if tight else 16)
+        return head + (26 if tight else 30) + (16 if tight else 18) + (12 if tight else 14) + (16 if tight else 20)
 
     def _hero_sprite(self, cw) -> int:
         """The sprite fills the space the card can spare, and the box hugs the art: the size is
@@ -1084,6 +1106,10 @@ class PokeWindow:
         if s.active:
             a = s.active
             pills.append((a.rarity.title(), RARITY_COLOR[a.rarity]))
+            # the stage is identity, so it is a pill here; its progress is the evolution card's
+            # job, and while a buddy is pinned that card, not this one, is about the companion
+            if not pinned:
+                pills.append((f"Stage {a.stage_index + 1} of {a.total_forms}", "gray"))
             if a.nature and not self.narrow and not pinned:
                 pills.append((a.nature.title(), "teal"))
         pills.append((STATE_LABEL.get(state, state), accent))
@@ -1091,30 +1117,23 @@ class PokeWindow:
         px = x0 + cw / 2 - total / 2
         for t, colr in pills:
             px += self.pill(px, cy, t, colr) + 6
-        cy += 26 if self.narrow else 30
-        if s.active:
-            # while a buddy is pinned the bar still tracks the companion, so say whose it is
-            left = (f"Raising {comp.display_name()}" if pinned
-                    else f"Stage {s.active.stage_index + 1} of {s.active.total_forms}")
-            frac = comp.progress
-            used, goal = s.active.used_at_stage, comp.threshold
-        else:
-            left = "Egg"
-            frac = comp.egg_progress
-            used, goal = s.egg_usage, C.EGG_HATCH_THRESHOLD
-        self.text(x0 + pad, cy, left, "captionB", "secondary")
-        self.text(x0 + cw - pad, cy, fmt.percent(frac * 100), "captionB", accent, anchor="ne")
-        cy += 16 if self.narrow else 18
-        self.capsule(x0 + pad, cy, cw - 2 * pad, 8, frac, accent)
-        cy += 12 if self.narrow else 14
-        self.text(x0 + pad, cy, f"{fmt.compact(used)} / {fmt.compact(goal)}", "caption", "tertiary")
-        # the remainder belongs to the evolution card; an egg has none, so it says it here
         if s.active is None:
+            # an egg has no evolution card, so its progress lives here; a companion's lives there
+            cy += 26 if self.narrow else 30
+            frac, used, goal = comp.egg_progress, s.egg_usage, C.EGG_HATCH_THRESHOLD
+            self.text(x0 + pad, cy, "Egg", "captionB", "secondary")
+            self.text(x0 + cw - pad, cy, fmt.percent(frac * 100), "captionB", accent, anchor="ne")
+            cy += 16 if self.narrow else 18
+            self.capsule(x0 + pad, cy, cw - 2 * pad, 8, frac, accent)
+            cy += 12 if self.narrow else 14
+            self.text(x0 + pad, cy, f"{fmt.compact(used)} / {fmt.compact(goal)}", "caption", "tertiary")
             self.text(x0 + cw - pad, cy, f"{fmt.compact(max(0, goal - used))} to hatch", "caption", "secondary", anchor="ne")
+        else:
+            cy += 22                                             # the pill row itself
         if not s.install_baseline_set:
             cy += 16
             self.text(x0 + pad, cy, "waiting for the first usage reading", "caption", "tertiary")
-        cy += 16 if self.narrow else 20
+        cy += (12 if self.narrow else 16) if s.active else (16 if self.narrow else 20)
         self.fit_card(card, x0, y, cw, cy - y)
         return cy
     def draw_today(self, y, x0, cw) -> int:
@@ -1480,10 +1499,12 @@ class PokeWindow:
         self.close_detail()
 
     def draw_evo_line(self, y, x0, cw, items, name_of, accent="blue", clickable=True,
-                      progress: float | None = None, remaining: str = "") -> int:
+                      progress: float | None = None, remaining: str = "", hidden_shiny: bool = False) -> int:
         """The line as a journey: current form, a progress track, what comes next. `items` is
-        [(species_id | None for a form not yet revealed, is_current)]; a None stays hidden — the
-        game decides what the player has seen, this only draws it (§5)."""
+        [(species_id | None for a form not yet revealed, is_current[, hidden])]; a None stays
+        hidden behind the companion's own preview, a known id marked hidden is drawn as a
+        pixelated preview of that sprite (in `hidden_shiny`) with no name — the game decides
+        what the player has seen, this only draws it (§5)."""
         pad = self.pad
         sprite = SPRITE["line"] if not self.narrow else SPRITE["card"] + 8
         has_track = progress is not None
@@ -1503,7 +1524,8 @@ class PokeWindow:
         # its slot minus a gutter — the old fixed-width box could not shrink and spilled into its
         # neighbour (and past the padding) once the slot got narrow
         half = max(20.0, min(each / 2 - 6, sprite / 2 + 14))
-        for i, (cid, current) in enumerate(items):
+        for i, item in enumerate(items):
+            cid, current, hidden = (*item, False)[:3]
             cx = inner_l + each * i + each / 2
             if current:
                 cur_x = cx
@@ -1514,6 +1536,16 @@ class PokeWindow:
                 nxt_x = cx
             if cid is None:
                 self.draw_future_form(cx, ty + sprite / 2, i)
+                label = "???"
+            elif hidden:
+                # a form this Pokémon could still become: the sprite pixelated as at the start
+                # of a stage, so the line says there is more without giving it away
+                path = self.payload["paths"].get(("static", cid, hidden_shiny)) if self.payload else None
+                ph = self.preview_img(path, sprite, 0.0)
+                if ph:
+                    self.c.create_image(cx, ty + sprite / 2, image=ph)
+                else:
+                    self._unknown_form(cx, ty + sprite / 2)
                 label = "???"
             else:
                 tag = f"line:{cid}"
@@ -1613,8 +1645,10 @@ class PokeWindow:
         # the two actions sit in the header on a roomy card and on their own row when narrow,
         # so they never crowd the caption or each other
         owned = s.owns_species(sid)
-        # three actions need real room; below that they get their own wrapping row
-        stacked = owned and (self.narrow or cw < 560)
+        # three actions need real room; below that they get their own wrapping row. With the
+        # raise button present the header only has room for the caption from ~760 px up
+        three = owned and comp.raisable_record(sid) is not None
+        stacked = owned and (self.narrow or cw < (760 if three else 560))
         pin_left = x0 + cw - self.pad
         if owned and not stacked:
             pin_left = self._species_actions(x0, y + h - button_height(self.vw) - 10, cw, sid)
@@ -1632,8 +1666,17 @@ class PokeWindow:
         if shiny:
             tail.append("shiny")
         if tail:
-            self.text(tx, ty, self._ellipsize(" · ".join(tail), "caption", max(60, pin_left - tx - 10)),
-                      "caption", "secondary")
+            maxw = max(60, pin_left - tx - 10)
+            caption = " · ".join(tail)
+            head = " · ".join(tail[:2])
+            if len(tail) > 2 and self.measure(caption, "caption") > maxw and self.measure(head, "caption") <= maxw:
+                # too long for one line on a narrow card: what it is and its nature, then its
+                # size on a second line — instead of a sentence that trails off at "19.5…".
+                # (When even the first half will not fit, one ellipsized line beats two.)
+                self.text(tx, ty, head, "caption", "secondary")
+                ty += 18
+                caption = " · ".join(tail[2:])
+            self.text(tx, ty, self._ellipsize(caption, "caption", maxw), "caption", "secondary")
         y += h + 10
         if stacked:
             y = self._species_actions(x0, y, cw, sid, stacked=True) + 10
@@ -1641,14 +1684,23 @@ class PokeWindow:
         failed = sid in (self.payload or {}).get("meta_failed", set()) and not self.busy and not self.refresh_again
         y = self.draw_stats_card(y, x0, cw, view, is_current, failed) + 10
 
-        # evolution line: the Pokémon being raised shows reached forms + blurred previews
+        # evolution line: the Pokémon being raised shows reached forms + blurred previews. Any
+        # other species shows its whole line — every form up to the deepest one you own sharp
+        # and named, what lies beyond as pixelated previews — so a caught Wooper says it can
+        # still become something, and a caught Quagsire says where it came from
+        line = (self.payload or {}).get("lines", {}).get(sid)
+        path_ids = line.tree.path_through(sid, s.owns_species) if line and not (raising and a and comp.line) else []
         if raising and a and comp.line:
             items = [(cid, cid == sid) for cid in a.path_ids[: a.stage_index + 1]]
             items += [(None, False)] * max(0, a.total_forms - len(items))
+        elif path_ids:
+            seen = max(i for i, cid in enumerate(path_ids) if cid == sid or s.owns_species(cid))
+            items = [(cid, cid == sid, i > seen) for i, cid in enumerate(path_ids)]
+            name_of = lambda cid, _line=line: _line.name(cid, s.language)   # noqa: E731 — the line knows every member
         else:
             chain = list(record.chain_order) if record else [sid]
             items = [(cid, cid == sid) for cid in chain]
-        y = self.draw_evo_line(y, x0, cw, items, name_of, "blue") + 10
+        y = self.draw_evo_line(y, x0, cw, items, name_of, "blue", hidden_shiny=shiny) + 10
 
         # records
         rows = []
@@ -1701,10 +1753,10 @@ class PokeWindow:
                  (lambda t=sid, on=not is_fighter: self._set_fighter(t if on else None)),
                  "This one already fights for you" if is_fighter else "Field this Pokémon in battles")]
         if can_raise or comp.raisable_record(sid) is not None:
-            # when it is only the price standing in the way, say so on the button rather than
-            # leaving a control that looks pressable and silently is not (the Shop does the same)
+            # when it is only the price standing in the way, say so on the button — and still say
+            # what the button is for, so "783.2M short" is not a mystery (the Shop does the same)
             short = C.FRESH_EGG_PRICE - comp.wallet
-            label = "Raise this one" if can_raise else (f"{fmt.compact(short)} short" if short > 0 else "Raise this one")
+            label = "Raise this one" if can_raise else (f"Raise · {fmt.compact(short)} short" if short > 0 else "Raise this one")
             acts.append(("raise:one", label, "filled" if can_raise else "disabled",
                          (lambda t=sid: self._raise_caught(t)),
                          why or (f"Make it your companion for {fmt.compact(C.FRESH_EGG_PRICE)} tokens"
@@ -2391,12 +2443,13 @@ class PokeWindow:
         ry = y + pad + 18
         if not rows:
             self.text(x0 + pad, ry, "No battles yet", "sub", "tertiary")
+        me = settings.get(self.app.dir, "trainer") or B.default_trainer()
         for i, r in enumerate(rows):
             self.dot(x0 + pad + 4, ry + 9, 3.5, "green" if r.get("won") else "red")
-            right = (f"{r.get('turns', '?')} turns" if self.narrow else
-                     f"{'won' if r.get('won') else 'lost'} · {r.get('turns', '?')} turns · {r.get('date', '')}")
+            # the sentence carries the result, so the right side is just when and how long
+            right = f"{r.get('turns', '?')} turns" + ("" if self.narrow else f" · {r.get('date', '')}")
             self.text(x0 + cw - pad, ry + 1, right, "caption", "secondary", anchor="ne")
-            left = f"{r.get('opponent', '?')} · {r.get('trainer', '?')}"
+            left = BU.record_line(r, me)
             self.text(x0 + pad + 14, ry, self._ellipsize(left, "body", cw - 2 * pad - 24 - self.measure(right, "caption")),
                       "body", "label")
             if i < len(rows) - 1:
@@ -2550,7 +2603,9 @@ def run_window(app, compact: bool = False, dark: bool | None = None, interval: i
     except tk.TclError as e:
         print(f"cannot open a window: {e}\n(is WSLg running? try: export DISPLAY=:0)", file=sys.stderr)
         return 1
-    instance.write_pid(app.dir)
+    supervised = bool(os.environ.get(instance.SUPERVISED_ENV))    # the launcher owns the pid file then
+    if not supervised:
+        instance.write_pid(app.dir)
     if os.name != "nt":
         signal.signal(signal.SIGTERM, lambda *_: setattr(win, "want_quit", True))
     app.log(f"window opened compact={compact} pid={os.getpid()}")
@@ -2562,6 +2617,7 @@ def run_window(app, compact: bool = False, dark: bool | None = None, interval: i
         except tk.TclError:
             pass
     finally:
-        instance.clear_pid(app.dir)
+        if not supervised:
+            instance.clear_pid(app.dir)
         app.log("window closed")
     return 0

@@ -503,21 +503,38 @@ def cmd_bag(app: App, args) -> int:
 
 
 def cmd_app(app: App, args) -> int:
-    if instance.running_pid(app.dir) is not None:
+    # the pid on file is the supervisor's when this is its window child: not "already open"
+    if not os.environ.get(instance.SUPERVISED_ENV) and instance.running_pid(app.dir) is not None:
         instance.send(app.dir, "raise")
         print("PokeToken is already open — brought it to the front.")
         return 0
     compact = bool(getattr(args, "compact", False))
+    if not os.environ.get("DISPLAY") and Path("/mnt/wslg").exists():
+        os.environ["DISPLAY"] = ":0"
+    window_argv = ["--state-dir", str(app.dir), "app", "--fg", "-i", str(args.interval)]   # global option first
+    window_argv += ["--compact"] if compact else []
+    window_argv += ["--dark"] if args.dark else ["--light"] if args.light else []
     if not getattr(args, "fg", False):                     # background is the default; --fg attaches
-        argv = ["--state-dir", str(app.dir), "app", "--fg", "-i", str(args.interval)]   # global option first
-        argv += ["--compact"] if compact else []
-        argv += ["--dark"] if args.dark else ["--light"] if args.light else []
-        pid = instance.spawn_detached(argv, app.dir)
+        if not instance.probe_display():
+            # name the cause instead of "no window appeared": on WSL this is WSLg's X server
+            # gone after a lock-screen reconnect, and only a restart of WSL brings it back
+            print(f"cannot open a window: the display is not answering (DISPLAY={os.environ.get('DISPLAY', 'unset')}).\n"
+                  "On WSL, WSLg's X server has probably died — run `wsl --shutdown` from Windows and try again.")
+            return 1
+        pid = instance.spawn_detached(window_argv + ["--watch"], app.dir)
         if instance.wait_for(lambda: instance.running_pid(app.dir) is not None, 10):
             print(f"PokeToken opened in the background (pid {pid}).")
             return 0
         print(f"started pid {pid} but no window appeared — see {instance.log_file(app.dir)}")
         return 1
+    if getattr(args, "watch", False):
+        # the background launcher: own the pid file, run the window as a child and reopen it
+        # when the display dies under it (see instance.supervise)
+        import subprocess
+        env = dict(os.environ, **{instance.SUPERVISED_ENV: "1"})
+        spawn = lambda: subprocess.Popen([sys.executable, "-m", "poketoken", *window_argv],   # noqa: E731
+                                         stdin=subprocess.DEVNULL, env=env)
+        return instance.supervise(app.dir, spawn, instance.probe_display, app.log)
     from .ui import run_window
     dark = True if args.dark else (False if args.light else None)
     return run_window(app, compact=compact, dark=dark, interval=args.interval)
@@ -742,6 +759,7 @@ def main(argv: list[str] | None = None) -> int:
     def window_flags(sp):
         sp.add_argument("--fg", action="store_true", help="stay attached to the terminal (default: background)")
         sp.add_argument("-d", "--detach", action="store_true", help=argparse.SUPPRESS)   # old spelling of the default
+        sp.add_argument("--watch", action="store_true", help=argparse.SUPPRESS)   # the launcher's supervisor (with --fg)
         sp.add_argument("--dark", action="store_true", help="dark appearance")
         sp.add_argument("--light", action="store_true", help="light appearance")
         sp.add_argument("-i", "--interval", type=int, default=30, help="refresh seconds")

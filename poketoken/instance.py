@@ -125,6 +125,70 @@ def spawn_detached(argv: list[str], state_dir: Path) -> int:
     return proc.pid
 
 
+SUPERVISED_ENV = "POKETOKEN_SUPERVISED"     # set on the window when a supervisor owns the pid file
+
+
+def probe_display(timeout: float = 5.0) -> bool:
+    """Whether a Tk window can be opened right now. Runs in a subprocess so a hung X server
+    (WSLg's Xwayland after a lock-screen reconnect) cannot hang us: the connect blocks, the
+    child is killed after `timeout`, and the answer is no."""
+    code = "import tkinter as tk\nr = tk.Tk()\nr.withdraw()\nr.update()\nr.destroy()\n"
+    try:
+        p = subprocess.run([sys.executable, "-c", code], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return p.returncode == 0
+
+
+def supervise(state_dir: Path, spawn: Callable[[], subprocess.Popen], probe: Callable[[], bool],
+              log: Callable[[str], None], sleep: Callable[[float], None] = time.sleep,
+              waits: tuple = (2, 5, 10, 20, 30), quick: float = 10.0, max_quick: int = 5,
+              clock: Callable[[], float] = time.monotonic) -> int:
+    """Keep the window alive across display crashes. The supervisor owns the pid file and runs
+    the window as a child (with SUPERVISED_ENV set), because when the X server dies under a Tk
+    window Xlib exits the process on the spot — nothing inside it can recover. Here we notice
+    the death, wait until `probe` says the display answers again, and open the window anew.
+    A clean exit (the user closed it, or `quit` arrived while waiting) ends the loop; so do
+    `max_quick` deaths in a row within `quick` seconds of starting, which is a bug, not a lost
+    display. Returns the exit code to report."""
+    write_pid(state_dir)
+    child: subprocess.Popen | None = None
+    stop: list[bool] = []
+    if os.name != "nt":
+        import signal
+
+        def on_term(*_) -> None:
+            stop.append(True)
+            if child is not None and child.poll() is None:
+                child.terminate()
+        signal.signal(signal.SIGTERM, on_term)
+    quick_deaths = 0
+    try:
+        while not stop:
+            started = clock()
+            child = spawn()
+            rc = child.wait()
+            if stop or rc == 0:
+                return 0
+            quick_deaths = quick_deaths + 1 if clock() - started < quick else 0
+            if quick_deaths >= max_quick:
+                log(f"window died {max_quick} times in a row (exit {rc}); giving up")
+                return rc
+            log(f"window died (exit {rc}); waiting for the display to come back")
+            i = 0
+            while not stop:
+                if take_command(state_dir) == "quit":
+                    return 0
+                if probe():
+                    break
+                sleep(waits[min(i, len(waits) - 1)])
+                i += 1
+    finally:
+        clear_pid(state_dir)
+    return 0
+
+
 def wait_for(pred: Callable[[], bool], timeout: float, step: float = 0.1) -> bool:
     end = time.time() + timeout
     while time.time() < end:

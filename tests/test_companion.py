@@ -59,6 +59,39 @@ def make(rng_seed=1, api=None):
     return comp, api, clock, tmp
 
 
+class EvoPathTests(unittest.TestCase):
+    """The species page's line: root to leaf through one form, one branch where the tree forks."""
+
+    def test_linear_chain_through_the_middle(self):
+        tree = EvoNode(16, [EvoNode(17, [EvoNode(18)])])
+        self.assertEqual(tree.path_through(17), [16, 17, 18])
+        self.assertEqual(tree.path_through(18), [16, 17, 18])
+        self.assertEqual(tree.path_through(16), [16, 17, 18])
+
+    def test_branch_prefers_an_owned_form_else_the_first(self):
+        eevee = EvoNode(133, [EvoNode(134), EvoNode(135), EvoNode(136)])
+        self.assertEqual(eevee.path_through(133), [133, 134])
+        self.assertEqual(eevee.path_through(133, prefer=lambda s: s == 136), [133, 136])
+        self.assertEqual(eevee.path_through(135), [133, 135])            # a leaf: nothing below
+
+    def test_not_in_tree_is_empty(self):
+        self.assertEqual(EvoNode(1, [EvoNode(2)]).path_through(99), [])
+
+    def test_line_for_walks_up_to_the_base(self):
+        from unittest import mock
+        from poketoken.pokeapi import PokeAPI
+        d = Path(tempfile.mkdtemp())
+        api = PokeAPI(d / "cache", d / "sprites")
+        api._species = {195: {"id": 195, "evolves_from": 194}, 194: {"id": 194, "evolves_from": None}}
+        with mock.patch.object(api, "line", side_effect=lambda b: ("line", b)) as line:
+            self.assertEqual(api.line_for(195), ("line", 194))
+            line.assert_called_once_with(194)
+        # already in memory under its base: no lookup at all
+        api._lines = {194: EvoLine(194, EvoNode(194, [EvoNode(195)]), "common", {})}
+        with mock.patch.object(api, "species", side_effect=AssertionError("no lookup")):
+            self.assertIs(api.line_for(195), api._lines[194])
+
+
 class BalanceTests(unittest.TestCase):
     def test_phase_thresholds_sum_to_graduation_total(self):
         for rarity, total in C.GRADUATION_TOTAL.items():

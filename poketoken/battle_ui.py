@@ -85,6 +85,18 @@ def record_from_result(res: dict, mine: dict, other: dict, when: date | None = N
             "power": [B.power_score(mine), B.power_score(other)]}
 
 
+def record_line(r: dict, me: str | None = None) -> str:
+    """One record as a sentence that says who fought whom and how it went — 'Quagsire beat
+    Nidorino' — because a row of opponent names all under your own trainer name (you, fighting
+    yourself) says nothing. The challenger's trainer is named only when it is someone else."""
+    mine, other = r.get("mine") or "?", r.get("opponent") or "?"
+    line = f"{mine} beat {other}" if r.get("won") else f"{mine} lost to {other}"
+    trainer = r.get("trainer")
+    if trainer and trainer not in (me, "?"):
+        line += f" · {trainer}"
+    return line
+
+
 # ------------------------------------------------------------------ arena
 def hp_schedule(res: dict, card_a: dict, card_b: dict) -> list[tuple[int, int]]:
     """HP of (a, b) before the fight and after every hit, so the arena can deplete the bars one

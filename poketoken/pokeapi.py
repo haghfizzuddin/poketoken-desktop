@@ -124,6 +124,23 @@ class EvoNode:
     def all_ids(self) -> list[int]:
         return [self.species_id] + [i for c in self.children for i in c.all_ids()]
 
+    def path_through(self, sid: int, prefer=lambda _sid: False) -> list[int]:
+        """Root-to-leaf path passing through `sid`: every form above it, then one branch below —
+        the child whose subtree `prefer` says yes to (an owned form), else the first. Empty when
+        `sid` is not in this tree."""
+        if self.find(sid) is None:
+            return []
+        above: list[int] = []
+        cur = self
+        while cur.species_id != sid:
+            above.append(cur.species_id)
+            cur = next(c for c in cur.children if c.find(sid) is not None)
+        below: list[int] = []
+        while cur.children:
+            cur = next((c for c in cur.children if any(prefer(i) for i in c.all_ids())), cur.children[0])
+            below.append(cur.species_id)
+        return above + [sid] + below
+
     def keeping_animated(self) -> "EvoNode | None":
         if self.species_id not in ANIMATED_IDS:
             return None
@@ -318,6 +335,17 @@ class PokeAPI:
         self._write_json(path, line.to_dict())
         self._lines[base_id] = line
         return line
+
+    def line_for(self, sid: int) -> EvoLine:
+        """The line any member belongs to — line() wants the base, this walks `evolves_from` up to
+        it first, so a caught Quagsire still knows about Wooper. Same cache, keyed by the base."""
+        for line in self._lines.values():
+            if sid in line.tree.all_ids():
+                return line
+        sp = self.species(sid)
+        while sp.get("evolves_from") is not None:
+            sp = self.species(int(sp["evolves_from"]))
+        return self.line(int(sp["id"]))
 
     # ------------------------------------------------------------ base index
     def base_index(self) -> list[tuple[int, int]]:
