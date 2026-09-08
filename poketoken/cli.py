@@ -10,7 +10,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, battle as B, companion as C, fmt, instance, notify, service, settings, usage as U
+from . import (__version__, battle as B, battle_ui as BU, companion as C, fmt, instance, notify,
+               service, settings, usage as U)
 from .paths import state_dir
 from .pokeapi import PokeAPI, PokeAPIError
 
@@ -259,13 +260,28 @@ def _read_card_arg(text: str) -> dict:
     return B.decode_card(text)
 
 
-def _my_card(app: App) -> dict | None:
-    a = app.companion.state.active
-    if a is None:
+def _resolve_owned(app: App, who: str) -> int | None:
+    """A name or #id from the player's own Pokédex, or None when nothing matches."""
+    want = who.strip().lstrip("#")
+    owned = app.companion.owned_species()
+    for sid, name in owned:
+        if (want.isdigit() and sid == int(want)) or name.lower() == want.lower():
+            return sid
+    hits = [sid for sid, name in owned if name.lower().startswith(want.lower())]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _my_card(app: App, who: str | None = None) -> dict | None:
+    """The card you field. `who` picks an owned Pokémon for this call and remembers the choice."""
+    if who:
+        sid = _resolve_owned(app, who)
+        if sid is None:
+            raise ValueError(f"no owned Pokémon matches {who!r}")
+        BU.set_fighter(app.dir, sid)
+    sid = BU.fighter_sid(app.companion, app.dir)
+    if sid is None:
         return None
-    meta = app.api.pokemon(a.current_id)
-    trainer = settings.get(app.dir, "trainer") or B.default_trainer()
-    return B.make_card(app.companion, meta, trainer)
+    return BU.own_card(app.companion, app.api.pokemon(sid), app.dir, sid)
 
 
 def cmd_card(app: App, args) -> int:
@@ -274,7 +290,10 @@ def cmd_card(app: App, args) -> int:
         print(f"trainer name set to {args.trainer[:24]!r}")
     app.tick()
     try:
-        card = _my_card(app)
+        card = _my_card(app, args.with_)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 1
     except PokeAPIError as e:
         print(f"✗ PokéAPI unreachable, cannot build the card right now: {e}")
         return 1
@@ -284,8 +303,11 @@ def cmd_card(app: App, args) -> int:
     if args.json:
         print(json.dumps(card, indent=1))
         return 0
+    a = app.companion.state.active
+    origin = ("the Pokémon you are raising" if a and card["species"] == a.current_id
+              else "from your Pokédex, fielded at level 100")
     print(B.card_summary(card))
-    print(f"power {B.power_score(card)}\n")
+    print(f"power {B.power_score(card)} · {origin}\n")
     print(B.encode_card(card))
     print("\nSend that line to a colleague; they run:  poketoken battle <card>")
     return 0
@@ -298,7 +320,7 @@ def cmd_battle(app: App, args) -> int:
             card_a, card_b = _read_card_arg(args.card), _read_card_arg(args.other)
         else:
             app.tick()
-            card_a = _my_card(app)
+            card_a = _my_card(app, args.with_)
             if card_a is None:
                 print("You need a hatched Pokémon to battle.")
                 return 1
@@ -667,10 +689,12 @@ def main(argv: list[str] | None = None) -> int:
     cd = sub.add_parser("card", help="print your battle card to share with a colleague")
     cd.add_argument("--json", action="store_true", help="raw card instead of the token")
     cd.add_argument("--trainer", help="set the trainer name shown on your card")
+    cd.add_argument("--with", dest="with_", metavar="NAME", help="field this owned Pokémon (remembered)")
     bt = sub.add_parser("battle", help="fight a colleague's card (or two cards against each other)")
     bt.add_argument("card", help="a PT1. card token, a file containing one, or - for stdin")
     bt.add_argument("other", nargs="?", help="second card: spectate two cards instead of using yours")
     bt.add_argument("--log", type=int, default=12, help="turns of battle log to print")
+    bt.add_argument("--with", dest="with_", metavar="NAME", help="field this owned Pokémon (remembered)")
     sub.add_parser("dex", help="Pokédex / catch log")
     sh = sub.add_parser("shop", help="token shop")
     sh.add_argument("--buy", help="candy | mint | charm | egg | egg-uncommon | egg-rare")

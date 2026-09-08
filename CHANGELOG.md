@@ -21,6 +21,11 @@
 - The footer no longer carries build information; it moved to About in the menu.
 
 ### Added
+- **Choose who fights.** Any Pokémon in the Pokédex can be fielded instead of the companion,
+  from its species page ("Use in battle") or with `--with <name>` on `card` and `battle`. A
+  record fights at level 100 with its saved IVs — the same numbers its species page shows —
+  while the companion fights at the level it has grown to. The choice is remembered, shown on
+  the Battle tab, and falls back to the companion if that species leaves the Pokédex.
 - **Buddy.** Pin any owned Pokémon to the home card from its species page or with
   `poketoken buddy <name|#id>`; `--clear` goes back to following the companion. Display only —
   the companion keeps growing underneath and the progress bar names it. Ownership is required,

@@ -369,6 +369,7 @@ class PokeWindow:
         extra = ((self.detail, self._species_shiny(self.detail)),) if self.detail else ()
         extra += self._battle_extra()                                  # the challenger's sprite, if a card is loaded
         detail = self.detail
+        fighter = BU.fighter_sid(self.app.companion, self.app.dir)     # the card you field may not be the companion
 
         def work():
             try:
@@ -379,7 +380,7 @@ class PokeWindow:
                 meta: dict[int, dict] = {}
                 meta_failed: set[int] = set()
                 a = app.companion.state.active
-                for sid in {a.current_id if a else None, detail} - {None}:
+                for sid in {a.current_id if a else None, detail, fighter} - {None}:
                     try:
                         meta[sid] = app.api.pokemon(sid)
                     except Exception as e:  # noqa: BLE001 — stats are optional; the card says so
@@ -1582,19 +1583,13 @@ class PokeWindow:
             for t in view["types"]:
                 px += self.pill(px, ty, t.title(), TYPE_COLORS.get(t, "gray")) + 6
             ty += 26
-        # the pin button is placed first so the caption below can stop short of it
+        # the two actions sit in the header on a roomy card and on their own row when narrow,
+        # so they never crowd the caption or each other
+        owned = s.owns_species(sid)
+        stacked = owned and self.narrow
         pin_left = x0 + cw - self.pad
-        if s.owns_species(sid):
-            bh = button_height(self.vw)
-            is_buddy = s.representative_species_id == sid
-            label = "Unpin" if is_buddy else "Pin as buddy"
-            bw = max(96, self.measure(label, "captionB") + 26)
-            pin_left = x0 + cw - self.pad - bw
-            self._battle_button(pin_left, y + h - bh - 10, bw, bh, label, "buddy:toggle",
-                                (lambda t=sid, on=not is_buddy: self._set_buddy(t if on else None)),
-                                "tinted" if is_buddy else "filled")
-            self._tooltip("buddy:toggle", "Go back to showing the Pokémon you are raising" if is_buddy
-                          else "Show this Pokémon on the home card")
+        if owned and not stacked:
+            pin_left = self._species_actions(x0, y + h - button_height(self.vw) - 10, cw, sid)
         tail = []
         if is_current:
             tail.append(f"stage {a.stage_index + 1} of {a.total_forms}")
@@ -1612,6 +1607,8 @@ class PokeWindow:
             self.text(tx, ty, self._ellipsize(" · ".join(tail), "caption", max(60, pin_left - tx - 10)),
                       "caption", "secondary")
         y += h + 10
+        if stacked:
+            y = self._species_actions(x0, y, cw, sid, stacked=True) + 10
 
         failed = sid in (self.payload or {}).get("meta_failed", set()) and not self.busy and not self.refresh_again
         y = self.draw_stats_card(y, x0, cw, view, is_current, failed) + 10
@@ -1647,6 +1644,35 @@ class PokeWindow:
                 self.sep(x0 + 18, ry + 30, cw - 36)
             ry += 38
         return y + h + 12
+
+    def _species_actions(self, x0, y, cw, sid: int, stacked: bool = False) -> float:
+        """Pin as buddy / Use in battle. Returns the left edge they occupy (so a caption beside
+        them can stop short), or the row's bottom when they are stacked on their own line."""
+        comp = self.app.companion
+        bh = button_height(self.vw)
+        is_buddy = comp.state.representative_species_id == sid
+        is_fighter = BU.fighter_sid(comp, self.app.dir) == sid
+        f_label = "Fighting" if is_fighter else "Use in battle"
+        b_label = "Unpin" if is_buddy else "Pin as buddy"
+        if stacked:
+            each = (cw - 8) / 2
+            b_x, f_x, b_w, f_w = x0, x0 + each + 8, each, each
+        else:
+            f_w = max(96, self.measure(f_label, "captionB") + 26)
+            b_w = max(96, self.measure(b_label, "captionB") + 26)
+            f_x = x0 + cw - self.pad - f_w
+            b_x = f_x - 8 - b_w
+        self._battle_button(f_x, y, f_w, bh, f_label, "fighter:toggle",
+                            (lambda t=sid, on=not is_fighter: self._set_fighter(t if on else None)),
+                            "tinted" if is_fighter else "filled")
+        self._tooltip("fighter:toggle", "This one already fights for you" if is_fighter
+                      else "Field this Pokémon in battles (a Pokédex record fights at level 100)")
+        self._battle_button(b_x, y, b_w, bh, b_label, "buddy:toggle",
+                            (lambda t=sid, on=not is_buddy: self._set_buddy(t if on else None)),
+                            "tinted" if is_buddy else "filled")
+        self._tooltip("buddy:toggle", "Go back to showing the Pokémon you are raising" if is_buddy
+                      else "Show this Pokémon on the home card")
+        return y + bh if stacked else b_x
 
     def draw_stats_card(self, y, x0, cw, view, live: bool, failed: bool = False) -> int:
         """Abilities and the six stats with IVs; `live` = the Pokémon being raised (shows its luck)."""
@@ -1876,9 +1902,25 @@ class PokeWindow:
         return e
 
     def _battle_my_card(self) -> dict | None:
-        a = self.app.companion.state.active
-        meta = (self.payload or {}).get("meta", {}).get(a.current_id) if a else None
-        return BU.own_card(self.app.companion, meta, self.app.dir)
+        sid = BU.fighter_sid(self.app.companion, self.app.dir)
+        meta = (self.payload or {}).get("meta", {}).get(sid) if sid is not None else None
+        return BU.own_card(self.app.companion, meta, self.app.dir, sid)
+
+    def _set_fighter(self, sid: int | None) -> None:
+        """Choose which Pokémon fights. A Pokédex record fields at level 100; the companion
+        fields at whatever level it has grown to."""
+        comp = self.app.companion
+        if sid is not None and not comp.state.owns_species(sid):
+            self._toast("✕ that Pokémon is not in your Pokédex")
+            self.render()
+            return
+        BU.set_fighter(self.app.dir, sid)
+        self._battle().reset_fight()
+        a = comp.state.active
+        name = comp.buddy_name(sid) if sid is not None else (comp.display_name() if a else "your companion")
+        self._toast(f"{name} will battle")
+        self.refresh()
+        self.render()
 
     def _battle_button(self, x, y, w, h, label, tag, handler, style="tinted") -> None:
         """A button() that runs `handler` on click instead of the Shop's arm-then-confirm _act
@@ -2081,7 +2123,16 @@ class PokeWindow:
         self.text(x0 + pad, cy, "YOUR CARD", "captionB", "secondary")
         if mine:
             self.text(x0 + cw - pad, cy, f"power {B.power_score(mine)}", "caption", "tertiary", anchor="ne")
-        cy += 22
+        cy += 20
+        fsid = BU.fighter_sid(self.app.companion, self.app.dir)
+        from_dex = fsid is not None and (s.active is None or fsid != s.active.current_id)
+        self.text(x0 + pad, cy, "from your Pokédex · Lv 100" if from_dex else "the Pokémon you are raising",
+                  "caption", "tertiary")
+        self.text(x0 + cw - pad, cy, "Change ›", "captionB", "blue", anchor="ne", tags=("pick-fighter",))
+        self.c.tag_bind("pick-fighter", "<Button-1>", lambda e: self.set_tab("dex"))
+        self._hand("pick-fighter")
+        self._tooltip("pick-fighter", "Open the Pokédex and pick who fights")
+        cy += 18
         if s.active is None:
             self.text(x0 + pad, cy, "Still an egg", "headline", "label")
             cy += 20

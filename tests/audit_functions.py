@@ -216,7 +216,8 @@ for argv in (["status"], ["statusline"], ["refresh"], ["history", "-n", "10"], [
              ["encounter", "--throw"], ["encounter", "--throw", "ultraball"], ["shop", "--buy", "ball"], ["bag", "--use", "ball"],
              ["dex"], ["shop"],
              ["card", "--trainer", "Audit"], ["card", "--json"], ["buddy"], ["buddy", "Pidgeot"],
-             ["buddy", "#18"], ["buddy", "nosuchmon"], ["buddy", "--clear"], ["shop", "--buy", "mint"],
+             ["buddy", "#18"], ["buddy", "nosuchmon"], ["buddy", "--clear"],
+             ["card", "--with", "Pidgeot"], ["card", "--with", "nosuchmon"], ["card", "--with", "Ivysaur"], ["shop", "--buy", "mint"],
              ["shop", "--buy", "egg-rare"], ["bag"], ["bag", "--use", "candy"], ["bag", "--use", "mint"],
              ["bag", "--use", "bogus"], ["debug"], []):
     rc, out = quiet(cli.main, base + argv)
@@ -469,6 +470,24 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
             win.root.update(); time.sleep(0.05)
         win.render(); grab(win, "win-rich-buddy")
         win._set_buddy(999999); win._set_buddy(None)                                # rejected, then cleared
+        win._set_fighter(18)                                                        # field a Pokédex record
+        t0 = time.time()
+        while (win.busy or win.refresh_again) and time.time() - t0 < 20:
+            win.root.update(); time.sleep(0.05)
+        win.set_tab("battle"); win.render(); grab(win, "win-rich-fighter")
+        if (win._battle_my_card() or {}).get("level") != 100:
+            problems.append("battle: a fielded Pokédex record should fight at level 100")
+        win.open_species(18); win.root.update()                                     # inline actions
+        win.root.geometry("380x760")
+        t0 = time.time()
+        while win.root.winfo_width() > 500 and time.time() - t0 < 4:
+            win.root.update(); time.sleep(0.03)
+        win.open_species(18); win.render(); grab(win, "win-rich-species-narrow")     # stacked actions
+        win.root.geometry("1180x820")
+        t0 = time.time()
+        while win.root.winfo_width() < 1000 and time.time() - t0 < 4:
+            win.root.update(); time.sleep(0.03)
+        win._set_fighter(999999); win._set_fighter(None)                            # rejected, then reset
         win.open_species(18); win.root.update()
         win._escape()                                                               # backs out of the page, does not quit
         win.open_species(18); win.root.update()

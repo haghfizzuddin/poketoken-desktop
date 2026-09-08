@@ -179,13 +179,33 @@ def hit_row(line: str) -> tuple[str, str]:
     return f"T{turn}  {atk} · {mtype} · {dmg} dmg" + (f" · {note}" if note else ""), f"{left} HP"
 
 
-def own_card(comp, meta: dict | None, state_dir) -> dict | None:
-    """The active Pokémon's card, trainer name from settings (what `poketoken card` uses);
-    None while it is an egg or the species meta has not loaded."""
+def fighter_sid(comp, state_dir) -> int | None:
+    """Which Pokémon fights: the one chosen in settings when it is still owned, else whoever is
+    being raised. None while there is nothing to field."""
+    chosen = settings.get(state_dir, "fighter")
+    if isinstance(chosen, int) and not isinstance(chosen, bool) and comp.state.owns_species(chosen):
+        return chosen
+    a = comp.state.active
+    return a.current_id if a else None
+
+
+def set_fighter(state_dir, sid: int | None) -> None:
+    settings.set(state_dir, "fighter", sid)
+
+
+def own_card(comp, meta: dict | None, state_dir, sid: int | None = None) -> dict | None:
+    """The card you field: the active Pokémon as it stands, or a Pokédex record at level 100.
+    None while it is an egg or that species' meta has not loaded."""
     if meta is None:
         return None
     trainer = settings.get(state_dir, "trainer") or B.default_trainer()
-    return B.make_card(comp, meta, trainer)
+    a = comp.state.active
+    sid = fighter_sid(comp, state_dir) if sid is None else sid
+    if sid is None:
+        return None
+    if a is not None and sid == a.current_id:
+        return B.make_card(comp, meta, trainer)
+    return B.record_card(comp, sid, meta, trainer)
 
 
 def is_own_hit(line: str, name: str) -> bool:

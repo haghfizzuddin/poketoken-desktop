@@ -24,26 +24,46 @@ STAB = 1.5
 
 
 # ------------------------------------------------------------------ cards
+def _card(trainer: str, species: int, name: str, view: dict, nature, shiny: bool, rarity: str) -> dict:
+    return {
+        "v": 1,
+        "trainer": trainer[:24],
+        "species": species,
+        "name": name,
+        "level": view["level"],
+        "types": view["types"][:2],
+        "stats": {r["key"]: r["value"] for r in view["rows"]},
+        "nature": nature,
+        "shiny": bool(shiny),
+        "rarity": rarity,
+        "ivTotal": view["iv_total"],
+        "date": date.today().isoformat(),
+    }
+
+
 def make_card(comp: C.Companion, meta: dict, trainer: str) -> dict | None:
     """Snapshot of the active Pokémon as it stands right now."""
     view = comp.stats_view(meta)
     a = comp.state.active
     if view is None or a is None:
         return None
-    return {
-        "v": 1,
-        "trainer": trainer[:24],
-        "species": a.current_id,
-        "name": comp.display_name(),
-        "level": view["level"],
-        "types": view["types"][:2],
-        "stats": {r["key"]: r["value"] for r in view["rows"]},
-        "nature": a.nature,
-        "shiny": a.shiny_visible,
-        "rarity": a.rarity,
-        "ivTotal": view["iv_total"],
-        "date": date.today().isoformat(),
-    }
+    return _card(trainer, a.current_id, comp.display_name(), view, a.nature, a.shiny_visible, a.rarity)
+
+
+def record_card(comp: C.Companion, sid: int, meta: dict, trainer: str) -> dict | None:
+    """A card for a Pokémon in the Pokédex. Graduated, released and caught Pokémon are done
+    growing, so they field at level 100 with the IVs they were recorded with (the same numbers
+    the species page shows). Records made before IVs existed field with unknown IVs, which the
+    stat formula reads as zero."""
+    if not meta or int(meta.get("id", -1)) != int(sid):
+        return None
+    entry = next((e for e in sorted(comp.state.dex, key=lambda e: e.caught_at or "", reverse=True)
+                  if e.final_id == sid), None) or \
+            next((e for e in comp.state.dex if sid in e.chain_order), None)
+    if entry is None:
+        return None
+    view = C.Companion.stats_view_static(meta, entry.ivs, entry.nature)
+    return _card(trainer, sid, comp.buddy_name(sid), view, entry.nature, entry.is_shiny, entry.rarity)
 
 
 def encode_card(card: dict) -> str:

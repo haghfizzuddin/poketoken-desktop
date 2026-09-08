@@ -88,8 +88,8 @@ with no console flash. Create a shortcut to it and pin it to the taskbar or Star
 | `poketoken stats` | level, types, abilities, the six stats with IVs, and the luck behind them |
 | `poketoken buddy [name\|#id]` | pin an owned Pokémon to the home card (`--clear` to follow the one you are raising) |
 | `poketoken history -n 30` | daily usage table with the streak marker, streak and weekly goal |
-| `poketoken card [--trainer NAME]` | your battle card as a shareable token (`--json` for the raw card) |
-| `poketoken battle <card> [other]` | fight your Pokémon against a card, or spectate two cards |
+| `poketoken card [--trainer NAME]` | your battle card as a shareable token (`--json` for the raw card, `--with NAME` to field another Pokémon) |
+| `poketoken battle <card> [other]` | fight your Pokémon against a card, or spectate two cards (`--with NAME` to field another) |
 | `poketoken notify on\|off\|test\|status` | desktop notifications for hatch / evolve / graduate / candy / egg |
 | `poketoken timer on\|off\|status` | systemd user timer that runs `refresh` every 15 minutes while the window is closed (WSL, Linux) |
 | `poketoken autostart on\|off\|status` | open the window at sign-in: Windows Startup folder (WSL, Windows) or XDG autostart (Linux) |
@@ -119,6 +119,13 @@ sit beside Today on a wide window and fold into a "Show details" disclosure on a
 page, or with `poketoken buddy <name>`. It is a display choice only: the companion you are
 raising keeps growing underneath, and the card's progress bar says whose it is. A species you do
 not own cannot be pinned, so a pin can never reveal something you have not seen.
+
+**Who fights.** By default you field the Pokémon you are raising, at whatever level it has
+grown to. Any Pokémon in your Pokédex can take its place: open its species page and press
+**Use in battle**, or pass `--with <name>` to `card` or `battle`. A Pokédex Pokémon is finished
+growing, so it fields at level 100 with the IVs it was recorded with — considerably stronger
+than a young companion, which is the trade for having graduated it. The choice is remembered
+and shown on the Battle tab.
 
 **Responsive layout.** On a narrow window the companion's art gives up height so that it, the
 evolution track, rewards and today's usage all share the first screen: the sprite grows on a
