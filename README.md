@@ -114,7 +114,10 @@ the time and a refresh icon, both keeping their tooltips. Home leads with the co
 its evolution track, then rewards, and only then telemetry: Cost by model and Tokens by project
 sit beside Today on a wide window and fold into a "Show details" disclosure on a narrow one.
 
-**Responsive layout.** The window is the viewport, and four breakpoints drive it: below 480 px
+**Responsive layout.** On a narrow window the companion's art gives up height so that it, the
+evolution track, rewards and today's usage all share the first screen: the sprite grows on a
+tall window and shrinks toward a floor on a short one, rather than pushing the other cards
+below the fold. The window is the viewport, and four breakpoints drive it: below 480 px
 is compact (one column, reduced density, shorter copy), 480–767 single column, 768–1199 two
 columns, 1200 and up the full desktop with the content capped at 1240 px and centred. Every
 page uses the same container and grid, so the Pokédex, Shop and Bag fill a wide window with

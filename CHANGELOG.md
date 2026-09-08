@@ -21,6 +21,12 @@
 - The footer no longer carries build information; it moved to About in the menu.
 
 ### Fixed
+- On a narrow window the companion, its evolution, rewards and today's usage now share the first
+  screen: the hero sprite is sized from the height left over after the other cards, between a
+  96 px floor and the size chosen in the menu.
+- Tooltips no longer outlive the pointer. A right-click grabs the pointer so no leave event ever
+  arrives, which left the hover label on screen; it is now dismissed by the menu, by any click,
+  by leaving the canvas and on quit.
 - Battle result mapping. `simulate` now records each hit and the remaining HP **by side**, so a
   fight between two identical cards no longer depletes the wrong HP bar, mis-reports the winner's
   HP, or attributes every log line to both fighters. The RNG, damage and outcome are unchanged.

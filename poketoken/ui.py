@@ -230,6 +230,11 @@ class PokeWindow:
         self.c.bind("<Button-4>", lambda e: self.c.yview_scroll(-1, "units"))
         self.c.bind("<Button-5>", lambda e: self.c.yview_scroll(1, "units"))
         self.c.bind("<Configure>", self._on_configure)
+        # a tooltip must not outlive the pointer: any click, and leaving the canvas, dismisses it
+        self.c.bind("<Leave>", lambda e: self._hide_tip(), add="+")
+        for seq in ("<Button-1>", "<Button-2>", "<Button-3>"):
+            r.bind(seq, lambda e: self._hide_tip(), add="+")
+        r.bind("<FocusOut>", lambda e: self._hide_tip(), add="+")
         self.c.bind("<Double-Button-1>", lambda e: self.toggle_compact() if self.compact else None)
         r.bind("<Escape>", lambda e: self._escape())
         r.bind("<Control-w>", lambda e: self.quit())
@@ -486,6 +491,7 @@ class PokeWindow:
         self.render()
 
     def _show_menu(self, e) -> None:
+        self._hide_tip()                    # the menu grabs the pointer, so no <Leave> ever arrives
         self.menu.entryconfig(1, label="Full view" if self.compact else "Compact view")
         self.menu.entryconfig(2, label="Light appearance" if self.dark else "Dark appearance")
         self.menu.entryconfig(3, label=f"Notifications: {'On' if notify.enabled(self.app.dir) else 'Off'}")
@@ -493,6 +499,7 @@ class PokeWindow:
             self.menu.tk_popup(e.x_root, e.y_root)
         finally:
             self.menu.grab_release()
+            self._hide_tip_soon()
 
     def toggle_notify(self) -> None:
         on = not notify.enabled(self.app.dir)
@@ -713,7 +720,7 @@ class PokeWindow:
         if self.compact:
             y = self.draw_compact(w)
         else:
-            y = self.draw_header(w)
+            y = self.content_top = self.draw_header(w)
             # reading pages (one species, one story) stay narrow; the rest use the content frame
             cap = MAX_READING if self.detail is not None else MAX_CONTENT
             x0, cw = L.content_frame(w, cap)
@@ -843,6 +850,11 @@ class PokeWindow:
         self._tip_text = self._tips.get(tag, "")
         self._show_tip()
 
+    def _hide_tip_soon(self) -> None:
+        """Belt and braces: if a tooltip is somehow still up a moment after a click or a menu,
+        take it down. Tk gives no <Leave> when a grab steals the pointer."""
+        self.root.after(400, self._hide_tip)
+
     def _show_tip(self) -> None:
         self._hide_tip()
         text = getattr(self, "_tip_text", "")
@@ -872,9 +884,10 @@ class PokeWindow:
         cols = L.columns_for(w)
         blocks = self._home_blocks()
         if cols == 1:
+            gap = self.stack_gap
             for fn, _pin in blocks:
-                y = fn(y, x0, cw) + 10
-            return y - 10
+                y = fn(y, x0, cw) + gap
+            return y - gap
         geo = L.column_geometry(w, cols)
         drawn = []                                             # (items, height) per block, drawn at y=0
         for fn, pin in blocks:
@@ -926,6 +939,31 @@ class PokeWindow:
         remaining = f"{fmt.compact(comp.tokens_to_next)} to " + ("graduate" if comp.is_final_stage else "evolve")
         return self.draw_evo_line(y, x0, cw, items, lambda cid: comp.line.name(cid, s.language), accent,
                                   clickable=False, progress=comp.progress, remaining=remaining)
+    def _hero_chrome(self) -> float:
+        """The hero card's height without the sprite: name, pills, the progress rows, padding."""
+        return (self.pad - 4) + 2 + self.F["title"].metrics("linespace") + 10 + 30 + 18 + 14 + 20
+
+    def _hero_sprite(self, cw) -> int:
+        """The sprite fills the space the card can spare. On a narrow screen that means the
+        companion, its evolution, rewards and today's usage all fit the first screen: the sprite
+        gives up height to them rather than pushing them below the fold (§4)."""
+        pad = self.pad
+        cap = 200 if self.narrow else self.sprite_box
+        size = max(120, min(self.sprite_box, cap, int(cw - 2 * pad)))
+        if not self.narrow:
+            return int(size)
+        comp = self.app.companion
+        vh = self.c.winfo_height() or 700
+        # budget for the companion, its evolution, rewards and today — the four that should share
+        # the first screen. A wild encounter is transient: it may push Today below the fold rather
+        # than shrink the art every time one appears.
+        others = self._rewards_height() + self._today_height() + 3 * self.stack_gap
+        if comp.state.active and comp.line:
+            others += L.evo_rows(pad, self.F["captionB"].metrics("linespace"),
+                                 SPRITE["card"] + 8, True)["height"]
+        budget = vh - getattr(self, "content_top", 90) - 28 - others - self._hero_chrome()
+        return int(max(96, min(size, budget)))
+
     def draw_hero(self, y, x0, cw) -> int:
         """The companion: the largest thing on the page at every width. The sprite container is
         the user's chosen size, clamped to what the viewport can actually hold, so a narrow
@@ -937,8 +975,7 @@ class PokeWindow:
         hero_tag = ("hero",) if s.active else ()
         card = self.card(x0, y, cw, 10, tags=hero_tag)
         cy = y + pad - 4
-        cap = 200 if self.narrow else self.sprite_box          # compact viewports get the small hero tier
-        size = self.sprite_draw_box = max(120, min(self.sprite_box, cap, int(cw - 2 * pad)))
+        size = self.sprite_draw_box = self._hero_sprite(cw)
         self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
         self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="", tags=hero_tag)
         if s.active:
@@ -1088,12 +1125,35 @@ class PokeWindow:
         rows = [(name, v / peak, fmt.compact(int(v))) for name, v in rows_src]
         return self.draw_bar_list(y, x0, cw, "TOKENS BY PROJECT", rows, f"today · {fmt.compact(snap.today.total)}", "blue")
 
+    @property
+    def stack_gap(self) -> int:
+        """Vertical gap between Home's cards; compact viewports give some of it back to the art."""
+        return 8 if self.narrow else GAP
+
+    def _reward_row_h(self) -> int:
+        return 40 if self.narrow else 44
+
+    def _rewards_height(self) -> int:
+        """Kept beside draw_rewards so the hero can budget for it before either is drawn."""
+        return 12 + 18 + 2 * self._reward_row_h() + (0 if self.narrow else 24) + (2 if self.narrow else 8)
+
+    def _today_height(self) -> int:
+        """A close estimate of the Today card, for the same budgeting. draw_today still sizes
+        itself exactly with fit_card, so a small drift here costs nothing."""
+        num = self.F["num" if not self.narrow else "numSm"].metrics("linespace")
+        h = (self.pad - 4) + 18 + num + 8 + 24 + 6 + self.pad
+        if not self.narrow:
+            h += 8 + 4 * 17 + 2
+        else:
+            h += 22                                       # the "Show details" control
+        return h
+
     def draw_rewards(self, y, x0, cw) -> int:
         """Streak progress toward the next candy, the weekly goal, and what is in the bag."""
         comp = self.app.companion
         snap = self.payload["snap"] if self.payload else None
         today = snap.today_date if snap else comp.today
-        h = 12 + 18 + 2 * 44 + 24 + 8
+        h = self._rewards_height()
         self.card(x0, y, cw, h)
         self.text(x0 + 18, y + 12, "REWARDS", "captionB", "secondary")
         n, _, counts = comp.streak(today)
@@ -1107,7 +1167,7 @@ class PokeWindow:
                   "body", "label")
         self.text(x0 + cw - 18, ry + 2, f"+{nxt_candy} candy at {nxt_days} days", "caption", "secondary", anchor="ne")
         self.capsule(x0 + 18, ry + 22, cw - 36, 8, frac, "orange")
-        ry += 44
+        ry += self._reward_row_h()
         g = comp.weekly_goal(today)
         self.text(x0 + 18, ry, "Weekly goal", "body", "label")
         if g["target"]:
@@ -1117,10 +1177,11 @@ class PokeWindow:
         else:
             self.text(x0 + cw - 18, ry + 2, f"unlocks after {g['weeks_needed']} more week(s)", "caption", "tertiary", anchor="ne")
             self.capsule(x0 + 18, ry + 22, cw - 36, 8, 0, "blue")
-        ry += 44
-        owned = [f"{C.ITEMS[k]['label']} ×{v}" for k, v in comp.state.inventory.items() if v > 0 and k in C.ITEMS]
-        self.text(x0 + 18, ry, self._ellipsize("Bag: " + (" · ".join(owned) if owned else "empty"), "caption", cw - 36),
-                  "caption", "tertiary")
+        ry += self._reward_row_h()
+        if not self.narrow:                                # the bag line is secondary: it folds away first
+            owned = [f"{C.ITEMS[k]['label']} ×{v}" for k, v in comp.state.inventory.items() if v > 0 and k in C.ITEMS]
+            self.text(x0 + 18, ry, self._ellipsize("Bag: " + (" · ".join(owned) if owned else "empty"), "caption", cw - 36),
+                      "caption", "tertiary")
         return y + h
 
     def draw_activity(self, y, x0, cw) -> int:
