@@ -20,7 +20,7 @@ import tkinter.font as tkfont
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageFilter, ImageSequence, ImageTk
+from PIL import Image, ImageSequence, ImageTk
 
 from . import companion as C, fmt, instance, notify
 
@@ -72,8 +72,8 @@ def fit_scale(w: int, h: int, target: int) -> int:
         return 1
     return min(target // w, target // h)
 LINE_SPRITE = 52            # sprite size in the EVOLUTION LINE card
-PREVIEW_BLUR = 8.0          # Gaussian radius of the next form's preview at progress 0, for a LINE_SPRITE px sprite
-PREVIEW_DARK = 0.92         # how far its colours sit toward the silhouette at progress 0 (1 = solid)
+PREVIEW_BLOCK = 8           # mosaic cell size of the next form's preview at progress 0, for a LINE_SPRITE px sprite
+PREVIEW_DARK = 0.55         # how far its colours sit toward the silhouette at progress 0 (1 = solid)
 PREVIEW_LEVELS = 10         # progress buckets a preview is rendered (and cached) at
 
 
@@ -95,11 +95,11 @@ def _round_pts(x1, y1, x2, y2, r):
 
 
 # ------------------------------------------------------------ evolution preview (pure, no display)
-def blur_radius(progress: float, size: int = LINE_SPRITE) -> float:
-    """Blur of the next form's preview: PREVIEW_BLUR at progress 0 (scaled to the sprite size),
-    falling linearly to 0 at progress 1."""
+def block_size(progress: float, size: int = LINE_SPRITE) -> int:
+    """Mosaic cell size of the next form's preview: PREVIEW_BLOCK at progress 0 (scaled to the
+    sprite size), shrinking linearly to a single pixel at progress 1."""
     p = min(1.0, max(0.0, progress))
-    return PREVIEW_BLUR * (size / LINE_SPRITE) * (1.0 - p)
+    return max(1, round(PREVIEW_BLOCK * (size / LINE_SPRITE) * (1.0 - p)))
 
 
 def preview_level(progress: float) -> float:
@@ -116,20 +116,37 @@ def silhouette(im: Image.Image, colour: str) -> Image.Image:
     return out
 
 
+def mosaic(im: Image.Image, block: int, pad: tuple = (0, 0, 0, 0)) -> Image.Image:
+    """Pixelate: average the image into exact block×block cells and scale back up with hard
+    edges. The image is padded to whole cells with `pad` (use the background tint, alpha 0, so
+    edge cells do not average toward black)."""
+    if block <= 1:
+        return im.copy()
+    w, h = im.size
+    cols, rows = -(-w // block), -(-h // block)
+    padded = Image.new("RGBA", (cols * block, rows * block), pad)
+    padded.paste(im, (0, 0))
+    small = padded.resize((cols, rows), Image.BOX)
+    return small.resize(padded.size, Image.NEAREST).crop((0, 0, w, h))
+
+
 def preview_image(im: Image.Image, progress: float, colour: str) -> Image.Image:
-    """The next form's preview: the sprite blurred and darkened toward its silhouette at
+    """The next form's preview: pixelated into coarse cells and tinted toward its silhouette at
     progress 0, sharp and in full colour at progress 1 (it snaps clear when it evolves anyway)."""
     p = min(1.0, max(0.0, progress))
     if p >= 1.0:
         return im.copy()
-    out = Image.blend(im, silhouette(im, colour), PREVIEW_DARK * (1.0 - p))
-    radius = blur_radius(p, max(im.size))
-    if radius > 0:
-        # transparent pixels take the silhouette colour first, so the blur bleeds that and not black
-        flat = Image.new("RGBA", im.size, _rgb(colour))
-        flat.paste(out, mask=out)
-        flat.putalpha(out.getchannel("A"))
-        out = flat.filter(ImageFilter.GaussianBlur(radius))
+    tinted = Image.blend(im, silhouette(im, colour), PREVIEW_DARK * (1.0 - p))
+    block = block_size(p, max(im.size))
+    if block <= 1:
+        return tinted
+    # transparent pixels take the silhouette colour first, so edge cells average to that and not black
+    flat = Image.new("RGBA", im.size, _rgb(colour))
+    flat.paste(tinted, mask=tinted)
+    flat.putalpha(tinted.getchannel("A"))
+    out = mosaic(flat, block, pad=_rgb(colour)[:3] + (0,))
+    alpha = out.getchannel("A").point(lambda a: 255 if a >= 96 else 0)   # blocky, hard-edged shape
+    out.putalpha(alpha)
     return out
 
 

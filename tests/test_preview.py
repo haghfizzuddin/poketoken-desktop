@@ -36,17 +36,17 @@ def distance(a: Image.Image, b: Image.Image) -> float:
 
 class BlurRadiusTests(unittest.TestCase):
     def test_endpoints_and_scaling(self):
-        self.assertAlmostEqual(ui.blur_radius(0.0), ui.PREVIEW_BLUR)
-        self.assertEqual(ui.blur_radius(1.0), 0.0)
-        self.assertAlmostEqual(ui.blur_radius(0.0, size=104), 2 * ui.PREVIEW_BLUR)   # radius follows the sprite size
+        self.assertEqual(ui.block_size(0.0), ui.PREVIEW_BLOCK)
+        self.assertEqual(ui.block_size(1.0), 1)
+        self.assertEqual(ui.block_size(0.0, size=104), 2 * ui.PREVIEW_BLOCK)   # cell size follows the sprite size
 
     def test_monotonic_and_clamped(self):
         steps = [i / 20 for i in range(21)]
-        radii = [ui.blur_radius(p) for p in steps]
+        radii = [ui.block_size(p) for p in steps]
         self.assertEqual(radii, sorted(radii, reverse=True))
-        self.assertTrue(all(radii[i] > radii[i + 1] for i in range(len(radii) - 1)))
-        self.assertEqual(ui.blur_radius(-3.0), ui.blur_radius(0.0))
-        self.assertEqual(ui.blur_radius(7.0), 0.0)
+        self.assertGreater(len(set(radii)), 5)                 # integer cells: ties allowed, but it does shrink
+        self.assertEqual(ui.block_size(-3.0), ui.block_size(0.0))
+        self.assertEqual(ui.block_size(7.0), 1)
 
 
 class PreviewLevelTests(unittest.TestCase):
@@ -84,20 +84,29 @@ class PreviewImageTests(unittest.TestCase):
         self.assertIsNot(out, im)
         self.assertTrue(same(ui.preview_image(im, 2.5, TERTIARY), im))    # clamped
 
-    def test_zero_progress_is_a_blurred_silhouette(self):
+    def test_zero_progress_is_a_pixelated_tinted_silhouette(self):
         im = sprite()
         out = ui.preview_image(im, 0.0, TERTIARY)
         self.assertEqual((out.size, out.mode), (im.size, "RGBA"))
-        solid = out.getchannel("A").point(lambda a: 255 if a > 128 else 0)
-        mean = ImageStat.Stat(out.convert("RGB"), mask=solid).mean
-        for got, want in zip(mean, TERTIARY_RGB):
-            self.assertLess(abs(got - want), 12, mean)          # colours sit on the silhouette colour
-        # the blur spreads the shape past its original bounds (the disc starts at row 10)
-        self.assertLess(out.getchannel("A").getbbox()[1], im.getchannel("A").getbbox()[1])
+        # every mosaic cell is one flat colour
+        block = ui.block_size(0.0)
+        w, h = out.size
+        for cx in range(0, w, block):
+            for cy in range(0, h, block):
+                cell = out.crop((cx, cy, min(w, cx + block), min(h, cy + block)))
+                self.assertEqual(len(cell.getcolors()), 1, (cx, cy))
+        # the shape is hard-edged (no soft alpha) and still there
+        self.assertTrue(set(out.getchannel("A").getdata()) <= {0, 255})
+        self.assertIsNotNone(out.getchannel("A").getbbox())
+        # colours are pulled toward the silhouette tint compared with the sharp sprite
+        opaque = out.getchannel("A")
+        mean_out = ImageStat.Stat(out.convert("RGB"), mask=opaque).mean
+        mean_in = ImageStat.Stat(im.convert("RGB"), mask=im.getchannel("A").point(lambda a: 255 if a > 128 else 0)).mean
+        dist = lambda m: sum(abs(c - t) for c, t in zip(m, TERTIARY_RGB))  # noqa: E731
+        self.assertLess(dist(mean_out), dist(mean_in))
         # and no black bleeds in from the transparent pixels
-        darkest = min(ImageStat.Stat(out.convert("RGB"), mask=out.getchannel("A").point(lambda a: 255 if a else 0)).extrema,
-                      key=lambda e: e[0])[0]
-        self.assertGreater(darkest, 100)
+        darkest = min(ImageStat.Stat(out.convert("RGB"), mask=opaque).extrema, key=lambda e: e[0])[0]
+        self.assertGreater(darkest, 60)
 
     def test_clears_monotonically_toward_the_sprite(self):
         im = sprite()
