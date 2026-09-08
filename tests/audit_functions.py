@@ -491,6 +491,28 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
             if wpx == 360:                      # compact: the Today disclosure and its labels
                 win.set_tab("home"); win._toggle_details(); win.render(); grab(win, "win-rich-narrow-details")
                 win._toggle_details()
+        # every card's children must stay inside its padding box, and Home's cards must share
+        # one inset — the Evolution row used to bleed to the slot edge and read as overflow
+        for wpx in (360, 390, 480):
+            win.root.geometry(f"{wpx}x760")
+            t0 = time.time()
+            while abs(win.root.winfo_width() - wpx) > 2 and time.time() - t0 < 4:
+                win.root.update(); time.sleep(0.03)
+            win.set_tab("home"); win.render(); win.root.update()
+            cards = [(b[1], b[3], b[0], b[2], i) for i in win.c.find_all() if win.c.type(i) == "polygon"
+                     for b in [win.c.bbox(i)] if b and b[3] - b[1] > 60 and b[2] - b[0] > 200]
+            insets = []
+            for top, bot, l, r, cid in cards:
+                kids = [win.c.bbox(i) for i in win.c.find_all() if i != cid]
+                kids = [b for b in kids if b and b[1] >= top - 2 and b[3] <= bot + 2 and b[0] >= l - 4 and b[2] <= r + 4]
+                if not kids:
+                    continue
+                lo, hi = min(b[0] for b in kids), max(b[2] for b in kids)
+                insets.append((lo - l, r - hi))
+                if lo < l + 6 or hi > r - 6:
+                    problems.append(f"card at {wpx}px y{top}: child {lo}..{hi} breaks the padding box {l}..{r}")
+            if insets and (max(i[0] for i in insets) - min(i[0] for i in insets)) > 8:
+                problems.append(f"Home cards at {wpx}px disagree on their inset: {sorted({i[0] for i in insets})}")
         print(f" responsive sweep: 7 widths × 5 tabs, overflow={len(overflow)}")
         for o in overflow:
             problems.append("overflow " + o)

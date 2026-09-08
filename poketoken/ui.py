@@ -1344,15 +1344,20 @@ class PokeWindow:
         if has_track:
             self.text(x0 + cw - pad, y + pad - 4, fmt.percent(progress * 100), "captionB", accent, anchor="ne")
         n = max(1, len(items))
-        each = (cw - 2 * pad) / n
+        inner_l, inner_r = x0 + pad, x0 + cw - pad          # the card's padding box: nothing crosses it
+        each = (inner_r - inner_l) / n
         ty = y + pad + 14
         cur_x = nxt_x = None
+        # the highlight hugs the sprite instead of filling the slot, and can never be wider than
+        # its slot minus a gutter — the old fixed-width box could not shrink and spilled into its
+        # neighbour (and past the padding) once the slot got narrow
+        half = max(20.0, min(each / 2 - 6, sprite / 2 + 14))
         for i, (cid, current) in enumerate(items):
-            cx = x0 + pad + each * i + each / 2
+            cx = inner_l + each * i + each / 2
             if current:
                 cur_x = cx
-                self.rrect(cx - each / 2 + 4, ty - 6, cx + each / 2 - 4, ty + sprite + 24, RADIUS["cell"],
-                           fill=_blend(self.P[accent], self.P["card"], 0.86 if not self.dark else 0.75))
+                self.rrect(max(inner_l, cx - half), ty - 6, min(inner_r, cx + half), ty + sprite + 24,
+                           RADIUS["cell"], fill=_blend(self.P[accent], self.P["card"], 0.86 if not self.dark else 0.75))
             elif cur_x is not None and nxt_x is None:
                 nxt_x = cx
             if cid is None:
@@ -1374,15 +1379,20 @@ class PokeWindow:
                       "label" if current else "secondary", anchor="n")
         cy = ty + sprite + 24
         if has_track:
-            # the track runs from the current form to the one after it, so the bar reads as the
-            # distance still to travel rather than a generic percentage
-            tx1 = (cur_x + each / 2 - 2) if cur_x is not None else x0 + pad
-            tx2 = (nxt_x - each / 2 + 2) if nxt_x is not None else x0 + cw - pad
-            if tx2 - tx1 < 40:                       # final form, or too tight: span the card
-                tx1, tx2 = x0 + pad, x0 + cw - pad
+            # the track joins the current form to the next one, so it reads as the journey between
+            # them; with no next form it spans the padding box. Both ends are clamped to that box.
+            if cur_x is not None and nxt_x is not None:
+                tx1, tx2 = cur_x, nxt_x
+            else:
+                tx1, tx2 = inner_l, inner_r
+            tx1 = max(inner_l, min(tx1, inner_r))
+            tx2 = max(inner_l, min(tx2, inner_r))
+            if tx2 - tx1 < 48:                       # too tight to read: use the padding box
+                tx1, tx2 = inner_l, inner_r
             self.capsule(tx1, cy + 6, tx2 - tx1, 6, progress, accent)
             if remaining:
-                self.text((tx1 + tx2) / 2, cy + 16, remaining, "caption", "tertiary", anchor="n")
+                self.text((tx1 + tx2) / 2, cy + 16, self._ellipsize(remaining, "caption", inner_r - inner_l),
+                          "caption", "tertiary", anchor="n")
             cy += 30
         return y + h
     def draw_species(self, y, x0, cw) -> int:
