@@ -31,7 +31,6 @@ SPEED = {"egg": None, "sleep": 2.5, "idle": 1.6, "working": 1.0, "focus": 0.6, "
 FONT_PREFS = ["SF Pro Text", "Helvetica Neue", "Inter", "Segoe UI", "Ubuntu", "Liberation Sans", "DejaVu Sans"]
 TABS = [("home", "Home"), ("dex", "Pokédex"), ("shop", "Shop"), ("bag", "Bag"), ("battle", "Battle")]
 SPRITE_BOX = 96                     # native size class of the Gen-V sprites (used by previews)
-EVO_CARD_H = 116
 MINI_BOX = SPRITE["battle"]         # species-page header and arena sprite
 FULL_GEOMETRY = "420x760"
 FULL_MARGIN = 56                    # window width needed beyond the sprite container in the full view
@@ -1338,15 +1337,17 @@ class PokeWindow:
         pad = self.pad
         sprite = SPRITE["line"] if not self.narrow else SPRITE["card"] + 8
         has_track = progress is not None
-        h = pad + 16 + sprite + 26 + (30 if has_track else 0) + pad - 6
+        # measured, not guessed: the row sits below the label, so the highlight cannot cover it
+        m = L.evo_rows(pad, self.F["captionB"].metrics("linespace"), sprite, has_track)
+        h = m["height"]
         self.card(x0, y, cw, h)
-        self.text(x0 + pad, y + pad - 4, "EVOLUTION", "captionB", "secondary")
+        self.text(x0 + pad, y + m["label_top"], "EVOLUTION", "captionB", "secondary")
         if has_track:
-            self.text(x0 + cw - pad, y + pad - 4, fmt.percent(progress * 100), "captionB", accent, anchor="ne")
+            self.text(x0 + cw - pad, y + m["label_top"], fmt.percent(progress * 100), "captionB", accent, anchor="ne")
         n = max(1, len(items))
         inner_l, inner_r = x0 + pad, x0 + cw - pad          # the card's padding box: nothing crosses it
         each = (inner_r - inner_l) / n
-        ty = y + pad + 14
+        ty = y + m["row_top"]
         cur_x = nxt_x = None
         # the highlight hugs the sprite instead of filling the slot, and can never be wider than
         # its slot minus a gutter — the old fixed-width box could not shrink and spilled into its
@@ -1356,8 +1357,9 @@ class PokeWindow:
             cx = inner_l + each * i + each / 2
             if current:
                 cur_x = cx
-                self.rrect(max(inner_l, cx - half), ty - 6, min(inner_r, cx + half), ty + sprite + 24,
-                           RADIUS["cell"], fill=_blend(self.P[accent], self.P["card"], 0.86 if not self.dark else 0.75))
+                self.rrect(max(inner_l, cx - half), y + m["highlight_top"],
+                           min(inner_r, cx + half), y + m["highlight_bottom"], RADIUS["cell"],
+                           fill=_blend(self.P[accent], self.P["card"], 0.86 if not self.dark else 0.75))
             elif cur_x is not None and nxt_x is None:
                 nxt_x = cx
             if cid is None:
@@ -1375,9 +1377,9 @@ class PokeWindow:
                 if clickable and not current:
                     self.c.tag_bind(tag, "<Button-1>", lambda e, c=cid: self.open_species(c, self.detail_origin))
                     self._hand(tag)
-            self.text(cx, ty + sprite + 4, self._ellipsize(label, "caption", each - 10), "caption",
+            self.text(cx, y + m["name_top"], self._ellipsize(label, "caption", each - 10), "caption",
                       "label" if current else "secondary", anchor="n")
-        cy = ty + sprite + 24
+        cy = y + m["row_bottom"]
         if has_track:
             # the track joins the current form to the next one, so it reads as the journey between
             # them; with no next form it spans the padding box. Both ends are clamped to that box.

@@ -80,3 +80,34 @@ class LayoutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EvoRowTests(unittest.TestCase):
+    """The evolution row's vertical geometry: the highlight behind the current form must never
+    reach the label above it (it is drawn afterwards, so any overlap paints over the text)."""
+
+    def test_highlight_starts_below_the_label(self):
+        for pad in (12, 16):
+            for label_h in (13, 16, 17, 20):      # the font differs per machine; all must clear
+                for sprite in (40, 52, 64, 88):
+                    for track in (False, True):
+                        m = L.evo_rows(pad, label_h, sprite, track)
+                        self.assertGreaterEqual(m["highlight_top"], m["label_bottom"],
+                                                (pad, label_h, sprite, track))
+                        self.assertGreater(m["row_top"], m["label_bottom"])
+
+    def test_row_fits_inside_the_card(self):
+        m = L.evo_rows(12, 16, 64, True)
+        self.assertGreater(m["height"], m["row_bottom"])
+        self.assertGreater(m["height"], m["track_top"] + 20)
+        self.assertLess(m["highlight_bottom"], m["row_bottom"])
+        self.assertGreater(m["name_top"], m["row_top"] + 64)      # the name clears the sprite
+        no_track = L.evo_rows(12, 16, 64, False)
+        self.assertIsNone(no_track["track_top"])
+        self.assertLess(no_track["height"], m["height"])
+
+    def test_taller_label_pushes_the_row_down(self):
+        small = L.evo_rows(12, 13, 52, True)
+        big = L.evo_rows(12, 20, 52, True)
+        self.assertEqual(big["row_top"] - small["row_top"], 7)
+        self.assertEqual(big["height"] - small["height"], 7)
