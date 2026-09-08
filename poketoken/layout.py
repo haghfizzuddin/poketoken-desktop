@@ -1,26 +1,60 @@
 """Layout arithmetic for the window, kept pure so it is testable without a display:
-how many card columns fit a width, where each column sits, masonry placement of cards
-into the shortest column, ranked bar lists, and short model names."""
+the content frame for a viewport, how many card columns fit, masonry placement into the
+shortest column, item grids, ranked bar lists, and short model names."""
 from __future__ import annotations
 
 import re
 
+from .theme import GAP, MAX_CONTENT, breakpoint_for, is_compact
+
 MARGIN = 16          # window edge to first card
-GAP = 12             # between columns
+MARGIN_COMPACT = 12
 MIN_COL = 340        # narrowest useful card column
 MAX_COLS = 3
 
 
+def content_frame(width: int, max_width: int = MAX_CONTENT) -> tuple[float, float]:
+    """(x, w) of the centred content area for a viewport of `width`: full width minus the
+    margins, never wider than `max_width` (§1 — desktop centres, it does not stretch forever)."""
+    margin = MARGIN_COMPACT if is_compact(width) else MARGIN
+    usable = max(80, width - 2 * margin)
+    w = min(usable, max_width)
+    return (width - w) / 2, w
+
+
+def grid(width: float, min_cell: float, max_cols: int = 8, gap: float = GAP) -> tuple[int, float]:
+    """(columns, cell width) for a row of equal cells at least `min_cell` wide."""
+    cols = max(1, min(max_cols, int((width + gap) // (min_cell + gap))))
+    return cols, (width - gap * (cols - 1)) / cols
+
+
+def cell_xy(i: int, cols: int, cell_w: float, cell_h: float, x0: float, y0: float,
+            gap: float = GAP) -> tuple[float, float]:
+    """Top-left of the i-th cell in a `cols`-wide grid."""
+    return x0 + (i % cols) * (cell_w + gap), y0 + (i // cols) * (cell_h + gap)
+
+
+def grid_height(count: int, cols: int, cell_h: float, gap: float = GAP) -> float:
+    rows = max(0, -(-count // max(1, cols)))
+    return rows * cell_h + max(0, rows - 1) * gap
+
+
 def columns_for(width: int, max_cols: int = MAX_COLS) -> int:
-    usable = width - 2 * MARGIN
-    return max(1, min(max_cols, (usable + GAP) // (MIN_COL + GAP)))
+    """Card columns a page of `width` supports (1 below 'md', up to `max_cols` beyond)."""
+    bp = breakpoint_for(int(width))
+    if bp in ("xs", "sm"):
+        return 1
+    if bp == "md":                                   # tablet / small desktop: two at most
+        max_cols = min(max_cols, 2)
+    usable = min(width, MAX_CONTENT) - 2 * MARGIN
+    return max(1, min(max_cols, int((usable + GAP) // (MIN_COL + GAP))))
 
 
 def column_geometry(width: int, cols: int) -> list[tuple[float, float]]:
-    """[(x, w)] for each column across the usable width."""
-    usable = width - 2 * MARGIN
+    """[(x, w)] for each column across the centred content frame."""
+    x0, usable = content_frame(int(width))
     w = (usable - GAP * (cols - 1)) / cols
-    return [(MARGIN + i * (w + GAP), w) for i in range(cols)]
+    return [(x0 + i * (w + GAP), w) for i in range(cols)]
 
 
 def masonry(heights: list[float], cols: int, pinned: dict[int, int] | None = None,

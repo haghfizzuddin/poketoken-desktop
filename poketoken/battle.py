@@ -151,7 +151,9 @@ def simulate(card_a: dict, card_b: dict, chart: dict) -> dict:
     rng = random.Random(battle_seed(card_a, card_b))
     a, b = Fighter(card_a), Fighter(card_b)
     log: list[str] = []
-    turn = 0
+    hits: list[dict] = []          # the same events as `log`, but by side, so a replay cannot
+    turn = 0                        # mis-attribute a hit when both cards share a name
+
     while a.hp > 0 and b.hp > 0 and turn < MAX_TURNS:
         turn += 1
         first, second = (a, b) if a.stat("speed") > b.stat("speed") or (
@@ -166,14 +168,19 @@ def simulate(card_a: dict, card_b: dict, chart: dict) -> dict:
                    " — not very effective" if 0 < mult < (STAB if mtype in atk.types else 1) else \
                    " — no effect" if mult == 0 else ""
             log.append(f"T{turn}: {atk.name} used a {mtype.title()} move for {dmg}{note}  ({dfd.name} {dfd.hp} HP)")
+            hits.append({"turn": turn, "attacker": 0 if atk is a else 1, "defender": 0 if dfd is a else 1,
+                         "type": mtype, "damage": dmg, "note": note.strip(" —"), "hp": [a.hp, b.hp]})
     if a.hp > 0 and b.hp <= 0:
         winner = a
     elif b.hp > 0 and a.hp <= 0:
         winner = b
     else:                                                  # timeout: higher remaining HP share wins
         winner = a if a.hp / a.stat("hp") >= b.hp / b.stat("hp") else b
-    return {"winner": winner.card, "loser": (b if winner is a else a).card, "turns": turn,
-            "remaining": {a.name: a.hp, b.name: b.hp}, "log": log}
+    return {"winner": winner.card, "loser": (b if winner is a else a).card,
+            "winner_side": 0 if winner is a else 1, "turns": turn,
+            # keyed by name for readers that print it; by side because two cards can share a name
+            "remaining": {a.name: a.hp, b.name: b.hp}, "remaining_by_side": [a.hp, b.hp],
+            "log": log, "hits": hits}
 
 
 def power_score(card: dict) -> int:

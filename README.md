@@ -109,11 +109,18 @@ evolution line and records. "‹ Home" / "‹ Pokédex" go back; "Pokédex ›" 
 Future forms in the evolution line are shown pixelated and resolve as you approach the threshold.
 
 The header shows sync state — a green dot with the last refresh time, amber while refreshing,
-red if a refresh failed — next to a Refresh control. Home also has cards for Rewards (streak
-progress to the next candy, the weekly goal, your bag), Cost by model and Tokens by project
-(both for today). Widen or maximise the window and Home flows its cards into two or three
-balanced columns, the Pokédex board gets more cells per row, and reading pages such as Shop,
-Bag and Battle stay at a readable width in the centre; the narrow layout is unchanged.
+red if a refresh failed — next to a Refresh control; on a narrow window the label collapses to
+the time and a refresh icon, both keeping their tooltips. Home leads with the companion, then
+its evolution track, then rewards, and only then telemetry: Cost by model and Tokens by project
+sit beside Today on a wide window and fold into a "Show details" disclosure on a narrow one.
+
+**Responsive layout.** The window is the viewport, and four breakpoints drive it: below 480 px
+is compact (one column, reduced density, shorter copy), 480–767 single column, 768–1199 two
+columns, 1200 and up the full desktop with the content capped at 1240 px and centred. Every
+page uses the same container and grid, so the Pokédex, Shop and Bag fill a wide window with
+cells instead of stranding one narrow column in empty space, and reflow to single file when the
+window is narrow. Keyboard: `1`–`5` jump to a section, `←`/`→` step through them, `Ctrl-R`
+refreshes, `Esc` backs out of a species page and closes the window from the top level.
 
 **Battle tab.** Your card — name, level, types, the six stats and a power score — with a
 *Copy card* button that puts the `PT1.…` token on the clipboard. Paste a colleague's token into

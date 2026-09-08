@@ -67,29 +67,38 @@ def tally(records: list[dict]) -> tuple[int, int]:
     return wins, len(records) - wins
 
 
-def won(res: dict, mine: dict) -> bool:
-    """Did `mine` win? By identity when `mine` is one of the two fighters (two colleagues'
-    cards can be equal dicts), by equality for a copy."""
+def won(res: dict, mine: dict, side: int = 0) -> bool:
+    """Did `mine` win? By side when simulate() recorded one (two identical cards are otherwise
+    indistinguishable), then by identity, then by equality for a copy."""
+    if "winner_side" in res:
+        return int(res["winner_side"]) == side
     w, l = res["winner"], res["loser"]
     if mine is w or mine is l:
         return mine is w
     return w == mine
 
 
-def record_from_result(res: dict, mine: dict, other: dict, when: date | None = None) -> dict:
+def record_from_result(res: dict, mine: dict, other: dict, when: date | None = None, side: int = 0) -> dict:
     return {"opponent": other["name"], "trainer": other.get("trainer", "?"), "mine": mine["name"],
-            "won": won(res, mine), "winner": res["winner"]["name"], "turns": int(res["turns"]),
+            "won": won(res, mine, side), "winner": res["winner"]["name"], "turns": int(res["turns"]),
             "date": (when or date.today()).isoformat(),
             "power": [B.power_score(mine), B.power_score(other)]}
 
 
 # ------------------------------------------------------------------ arena
 def hp_schedule(res: dict, card_a: dict, card_b: dict) -> list[tuple[int, int]]:
-    """HP of (a, b) before the fight and after every hit in res["log"], so the arena can
-    deplete the bars one hit at a time. Read back from the log lines simulate() writes; when
-    both cards carry the same name the faster side is taken to strike first each turn."""
+    """HP of (a, b) before the fight and after every hit, so the arena can deplete the bars one
+    hit at a time. Uses the per-side `hits` simulate() records; falls back to parsing the text
+    log for results made before that existed (there, two cards with the same name can only be
+    told apart by assuming the faster side struck first)."""
     hp = [int(card_a["stats"]["hp"]), int(card_b["stats"]["hp"])]
     out = [tuple(hp)]
+    if res.get("hits"):
+        for hit in res["hits"]:
+            side = int(hit["defender"])
+            hp[side] = min(hp[side], int(hit["hp"][side]))
+            out.append(tuple(hp))
+        return out
     same = card_a["name"] == card_b["name"]
     a_first = int(card_a["stats"]["speed"]) >= int(card_b["stats"]["speed"])
     last_turn, hits = None, 0
@@ -130,14 +139,27 @@ def sprite_key(card: dict | None) -> tuple[int, bool] | None:
     return sid, bool(card.get("shiny"))
 
 
-def banner(res: dict, mine: dict, other: dict) -> dict:
-    """Result banner text: title, one line about the winner, one about power."""
+def banner(res: dict, mine: dict, other: dict, side: int = 0) -> dict:
+    """Result banner: title, who beat whom, and the numbers. `side` is which fighter is mine
+    (0 = the card passed first to simulate), so identical cards still resolve correctly."""
     w, l = res["winner"], res["loser"]
     turns = int(res["turns"])
-    left = res.get("remaining", {}).get(w["name"], 0)
-    return {"won": won(res, mine),
-            "title": "Victory!" if won(res, mine) else "Defeat",
-            "detail": f"{w['name']} ({w.get('trainer', '?')}) beat {l['name']} ({l.get('trainer', '?')})",
+    by_side = res.get("remaining_by_side")
+    if by_side:
+        left = int(by_side[int(res.get("winner_side", 0))])
+    else:
+        left = res.get("remaining", {}).get(w["name"], 0)
+    i_won = won(res, mine, side)
+    # with two identical cards the names alone read as nonsense ("Wooper beat Wooper"), so the
+    # detail line names the trainers from my point of view instead
+    if w["name"] == l["name"]:
+        detail = (f"You beat {other.get('trainer', 'the challenger')}" if i_won
+                  else f"{other.get('trainer', 'The challenger')} beat you")
+    else:
+        detail = f"{w['name']} ({w.get('trainer', '?')}) beat {l['name']} ({l.get('trainer', '?')})"
+    return {"won": i_won,
+            "title": "Victory!" if i_won else "Defeat",
+            "detail": detail,
             "power": f"{turns} turn{'s' if turns != 1 else ''} · {left} HP left · "
                      f"power {B.power_score(mine)} vs {B.power_score(other)}"}
 
@@ -167,8 +189,27 @@ def own_card(comp, meta: dict | None, state_dir) -> dict | None:
 
 
 def is_own_hit(line: str, name: str) -> bool:
-    """Was this log line one of `name`'s attacks? (Log lines start "T<n>: <attacker> used".)"""
+    """Was this log line one of `name`'s attacks? (Log lines start "T<n>: <attacker> used".)
+    Ambiguous when both fighters share a name — prefer log_rows(), which reads the sides."""
     return line.split(": ", 1)[-1].startswith(f"{name} used ")
+
+
+def log_rows(res: dict, mine_label: str = "You", other_label: str = "Rival") -> list[tuple[str, str, bool]]:
+    """The fight log as (left, right, is_mine) rows. When simulate() recorded sides, the attacker
+    is named by side, so two identically named cards still read as two different fighters."""
+    hits = res.get("hits")
+    if not hits:
+        return [(*hit_row(line), False) for line in res.get("log", [])]
+    same = res["winner"]["name"] == res["loser"]["name"]
+    out = []
+    for hit in hits:
+        mine = int(hit["attacker"]) == 0
+        who = (mine_label if mine else other_label) if same else \
+            (res["winner"] if int(hit["attacker"]) == int(res.get("winner_side", 0)) else res["loser"])["name"]
+        note = f" · {hit['note']}" if hit.get("note") else ""
+        out.append((f"T{hit['turn']}  {who} · {str(hit['type']).title()} · {hit['damage']} dmg{note}",
+                    f"{hit['hp'][int(hit['defender'])]} HP", mine))
+    return out
 
 
 # ------------------------------------------------------------------ state

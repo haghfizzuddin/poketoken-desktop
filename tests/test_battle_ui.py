@@ -108,11 +108,19 @@ class FormattingTests(unittest.TestCase):
         c = card("x", ["fire"]); del c["species"]
         self.assertIsNone(BU.sprite_key(c))
 
-    def test_won_prefers_identity(self):
+    def test_won_prefers_the_recorded_side(self):
         a, b = card("Twin", ["normal"]), card("Twin", ["normal"])          # equal dicts, different objects
         res = B.simulate(a, b, CHART)
-        self.assertNotEqual(BU.won(res, a), BU.won(res, b))
-        self.assertTrue(BU.won(res, dict(res["winner"])) or res["winner"] == res["loser"])
+        self.assertNotEqual(BU.won(res, a, 0), BU.won(res, b, 1))
+        self.assertEqual(BU.won(res, a, 0), res["winner_side"] == 0)
+
+    def test_won_falls_back_to_identity_without_a_side(self):
+        """Results made before simulate() recorded sides still resolve by object identity."""
+        a, b = card("Twin", ["normal"]), card("Twin", ["normal"])
+        res = B.simulate(a, b, CHART)
+        legacy = {k: v for k, v in res.items() if k != "winner_side"}
+        self.assertNotEqual(BU.won(legacy, a), BU.won(legacy, b))
+        self.assertTrue(BU.won(legacy, dict(legacy["winner"])) or legacy["winner"] == legacy["loser"])
 
     def test_record_and_banner(self):
         a, b = card("Sparky", ["electric"]), card("Splash", ["water"])
@@ -125,9 +133,9 @@ class FormattingTests(unittest.TestCase):
         self.assertTrue(bn["won"])
         self.assertEqual(bn["title"], "Victory!")
         self.assertEqual(bn["detail"], "Sparky (t) beat Splash (t)")
-        self.assertEqual(bn["power"], f"{res['turns']} turns · {res['remaining']['Sparky']} HP left · "
+        self.assertEqual(bn["power"], f"{res['turns']} turns · {res['remaining_by_side'][res['winner_side']]} HP left · "
                                       f"power {B.power_score(a)} vs {B.power_score(b)}")
-        lost = BU.banner(res, b, a)
+        lost = BU.banner(res, b, a, side=1)
         self.assertFalse(lost["won"])
         self.assertEqual(lost["title"], "Defeat")
         self.assertTrue(BU.banner(dict(res, turns=1), a, b)["power"].startswith("1 turn ·"))
@@ -189,3 +197,89 @@ class StateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SelfBattleTests(unittest.TestCase):
+    """Two identical cards (pasting your own token back) must still resolve to one clear side.
+    Before per-side hit records, the arena depleted the wrong bar and the banner could quote the
+    loser's HP, because the log and `remaining` were keyed by a name both fighters shared."""
+
+    def _pair(self):
+        base = {"v": 1, "trainer": "Fizz", "species": 194, "name": "Wooper", "level": 20,
+                "types": ["water", "ground"],
+                "stats": {"hp": 52, "attack": 30, "defense": 30, "special-attack": 20,
+                          "special-defense": 20, "speed": 30},
+                "nature": "hardy", "shiny": False, "rarity": "common", "ivTotal": 90, "date": "2026-09-08"}
+        mine = B.validate_card(dict(base, stats=dict(base["stats"])))
+        theirs = B.validate_card(dict(base, trainer="Rival", stats=dict(base["stats"])))
+        return mine, theirs
+
+    def test_arena_matches_the_result(self):
+        mine, theirs = self._pair()
+        chart = CHART
+        res = B.simulate(mine, theirs, chart)
+        sched = BU.hp_schedule(res, mine, theirs)
+        final_mine, final_theirs = sched[-1]
+        i_won = BU.won(res, mine, side=0)
+        # the side the bars show as fainted is the side the banner calls the loser
+        self.assertEqual(final_mine > 0, i_won)
+        self.assertEqual(final_theirs > 0, not i_won)
+        self.assertEqual((final_mine, final_theirs), tuple(res["remaining_by_side"]))
+        bn = BU.banner(res, mine, theirs, side=0)
+        self.assertEqual(bn["won"], i_won)
+        self.assertEqual(bn["title"], "Victory!" if i_won else "Defeat")
+        self.assertIn("You beat" if i_won else "beat you", bn["detail"])   # not "Wooper beat Wooper"
+        self.assertIn(f"{res['remaining_by_side'][res['winner_side']]} HP left", bn["power"])
+
+    def test_side_decides_when_cards_are_identical(self):
+        mine, theirs = self._pair()
+        chart = CHART
+        res = B.simulate(mine, theirs, chart)
+        self.assertNotEqual(BU.won(res, mine, side=0), BU.won(res, theirs, side=1))
+        rec_a = BU.record_from_result(res, mine, theirs, side=0)
+        rec_b = BU.record_from_result(res, theirs, mine, side=1)
+        self.assertNotEqual(rec_a["won"], rec_b["won"])          # one win, one loss, never two
+
+    def test_schedule_tracks_every_hit_by_side(self):
+        mine, theirs = self._pair()
+        chart = CHART
+        res = B.simulate(mine, theirs, chart)
+        sched = BU.hp_schedule(res, mine, theirs)
+        self.assertEqual(len(sched), len(res["hits"]) + 1)
+        self.assertEqual(len(res["hits"]), len(res["log"]))
+        for (a, b), hit in zip(sched[1:], res["hits"]):
+            self.assertEqual([a, b], list(hit["hp"]))            # bars follow the recorded HP exactly
+        self.assertTrue(all(a >= b for a, b in zip([s[0] for s in sched], [s[0] for s in sched][1:])))
+
+    def test_legacy_results_still_replay(self):
+        """A result dict without `hits` (an older saved fight) falls back to the log parser."""
+        mine, theirs = self._pair()
+        theirs = B.validate_card(dict(theirs, name="Quagsire"))
+        chart = CHART
+        res = B.simulate(mine, theirs, chart)
+        legacy = {k: v for k, v in res.items() if k not in ("hits", "remaining_by_side", "winner_side")}
+        self.assertEqual(BU.hp_schedule(legacy, mine, theirs), BU.hp_schedule(res, mine, theirs))
+        self.assertEqual(BU.won(legacy, mine), BU.won(res, mine, 0))
+
+    def test_log_names_the_sides_when_cards_match(self):
+        mine, theirs = self._pair()
+        res = B.simulate(mine, theirs, CHART)
+        rows = BU.log_rows(res, "You", "Rival")
+        self.assertEqual(len(rows), len(res["log"]))
+        self.assertTrue(any(mine_ for _, _, mine_ in rows))
+        self.assertTrue(any(not mine_ for _, _, mine_ in rows))
+        self.assertTrue(all(r[0].startswith("T") for r in rows))
+        self.assertTrue(any("You ·" in r[0] for r in rows))
+        self.assertTrue(any("Rival ·" in r[0] for r in rows))
+        # every row is attributed to exactly one side, in the order the fight happened
+        self.assertEqual([m for _, _, m in rows], [int(h["attacker"]) == 0 for h in res["hits"]])
+
+    def test_log_uses_species_names_when_they_differ(self):
+        mine, theirs = self._pair()
+        theirs = B.validate_card(dict(theirs, name="Quagsire"))
+        res = B.simulate(mine, theirs, CHART)
+        rows = BU.log_rows(res, "You", "Rival")
+        self.assertTrue(any("Wooper ·" in r[0] for r in rows))
+        self.assertTrue(any("Quagsire ·" in r[0] for r in rows))
+        legacy = {k: v for k, v in res.items() if k != "hits"}
+        self.assertEqual(len(BU.log_rows(legacy)), len(res["log"]))   # falls back to the text log

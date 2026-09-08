@@ -179,7 +179,7 @@ if len(launched) != 7:
 section("cli commands")
 rich = scratch / "state-rich"
 shutil.copytree(Path.home() / ".local/share/poketoken", rich, dirs_exist_ok=True)
-for junk in ("app.pid", "app.cmd", "app.log", "ui.json", "settings.json"):   # never inherit live window prefs              # never inherit the user's live window
+for junk in ("app.pid", "app.cmd", "app.log", "ui.json", "settings.json", "battles.json"):   # never inherit live window prefs              # never inherit the user's live window
     (rich / junk).unlink(missing_ok=True)
 st = json.loads((rich / "state.json").read_text())
 st.update({"usedSinceInstall": 6_200_000_000, "spentTokens": 600_000_000,
@@ -192,7 +192,7 @@ st.update({"usedSinceInstall": 6_200_000_000, "spentTokens": 600_000_000,
 (rich / "state.json").write_text(json.dumps(st))
 egg_dir = scratch / "state-egg"
 shutil.copytree(Path.home() / ".local/share/poketoken", egg_dir, dirs_exist_ok=True)
-for junk in ("app.pid", "app.cmd", "app.log", "ui.json", "settings.json"):   # never inherit live window prefs
+for junk in ("app.pid", "app.cmd", "app.log", "ui.json", "settings.json", "battles.json"):   # never inherit live window prefs
     (egg_dir / junk).unlink(missing_ok=True)
 rich_ui = scratch / "state-rich-ui"                 # untouched copy for the window walkthrough
 shutil.copytree(rich, rich_ui)
@@ -462,6 +462,8 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
         win.render(); grab(win, "win-rich-stats")
         win.close_stats(); win.open_stats(); win.open_board()                        # "Pokédex ›" → the board
         win.open_species(18); win.root.update()                                     # a graduated record's page
+        win._escape()                                                               # backs out of the page, does not quit
+        win.open_species(18); win.root.update()
         t0 = time.time()
         while (win.busy or win.refresh_again) and time.time() - t0 < 20:
             win.root.update(); time.sleep(0.05)
@@ -472,7 +474,33 @@ for label, sdir in (("rich", rich_ui), ("egg", egg_dir)):
             win.root.update(); time.sleep(0.05)
         win.render(); grab(win, "win-rich-detail")
         win.open_detail(2); win.root.update(); win.close_detail()
-        win.set_sprite_box(256); win.set_sprite_box(384); win.root.update()
+        win.set_sprite_box(192); win.set_sprite_box(256); win.root.update()
+        # ---- responsive sweep: every tab at every breakpoint, checking for horizontal overflow
+        overflow = []
+        for wpx in (360, 390, 480, 768, 1024, 1280, 1440):
+            win.root.geometry(f"{wpx}x{760 if wpx < 480 else 820}")
+            t0 = time.time()
+            while abs(win.root.winfo_width() - wpx) > 2 and time.time() - t0 < 4:
+                win.root.update(); time.sleep(0.03)
+            for tab in ("home", "dex", "shop", "bag", "battle"):
+                win.set_tab(tab); win.render(); win.root.update()
+                bbox = win.c.bbox("all")
+                cwid = win.c.winfo_width()
+                if bbox and (bbox[2] > cwid + 1 or bbox[0] < -1):
+                    overflow.append(f"{wpx}px {tab}: {bbox[0]}..{bbox[2]} vs {cwid}")
+            if wpx == 360:                      # compact: the Today disclosure and its labels
+                win.set_tab("home"); win._toggle_details(); win.render(); grab(win, "win-rich-narrow-details")
+                win._toggle_details()
+        print(f" responsive sweep: 7 widths × 5 tabs, overflow={len(overflow)}")
+        for o in overflow:
+            problems.append("overflow " + o)
+        win.root.geometry("1180x820")
+        t0 = time.time()
+        while win.root.winfo_width() < 1000 and time.time() - t0 < 4:
+            win.root.update(); time.sleep(0.03)
+        win._about(); win._step_tab(1); win._step_tab(-1)
+        win._enter_tip("refresh"); win._hide_tip(); win._enter_tip("nosuchtag"); win._hide_tip()
+        win.set_tab("home")
         win.toggle_compact(); win.set_sprite_box(256); win.set_sprite_box(384); win.toggle_compact()   # compact resizes to default_geometry
         win.toggle_dark(); win.set_tab("home"); grab(win, "win-rich-dark"); win.toggle_dark()
         win.root.geometry("1180x820"); win.set_tab("home")

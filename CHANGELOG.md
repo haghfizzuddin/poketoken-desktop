@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Interface
+- A responsive layout system: four breakpoints, one centred content frame capped at 1240 px, and
+  a shared grid used by every page. Wide windows fill with cells; narrow ones reflow to a single
+  column with shorter copy and lower density instead of shrinking the desktop layout.
+- Design tokens in `poketoken/theme.py` — palettes, spacing, radii, the type ladder, sprite tiers
+  and breakpoints — so pages stop inventing pixel values. Muted greys were lifted for contrast.
+- Header: brand, sync state and Refresh no longer collide at 360 px; the Refresh label collapses
+  to an icon with a tooltip. Tabs get touch-sized targets and all five stay reachable.
+- Home: the companion leads, then a real evolution track (progress, percentage, what is left),
+  then rewards, then telemetry. The detailed breakdown is a disclosure on narrow viewports.
+- Pokédex is a collection grid with larger sprites and a per-species state; Shop is grouped into
+  Balls, Training and Eggs and says how much you are short instead of greying a price out; Bag
+  shares the Shop's grid; Battle leads with the arena once a fight exists and puts the two cards
+  side by side on a wide window.
+- Sprites follow fixed tiers (hero, battle, dex, card, micro) and stay whole-number scaled.
+- Keyboard navigation, tooltips on icon-only controls, and no horizontal overflow at 360 px.
+- The footer no longer carries build information; it moved to About in the menu.
+
+### Fixed
+- Battle result mapping. `simulate` now records each hit and the remaining HP **by side**, so a
+  fight between two identical cards no longer depletes the wrong HP bar, mis-reports the winner's
+  HP, or attributes every log line to both fighters. The RNG, damage and outcome are unchanged.
+
 ## v0.2.0 — 2026-09-08
 
 ### Game

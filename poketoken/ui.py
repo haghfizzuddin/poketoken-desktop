@@ -23,39 +23,28 @@ from pathlib import Path
 from PIL import Image, ImageSequence, ImageTk
 
 from . import battle as B, battle_ui as BU, companion as C, fmt, instance, layout as L, notify
+from .theme import (DARK, LIGHT, RARITY_COLOR, SPRITE, SPRITE_BOXES, SPRITE_PAD, STATE_COLOR, STATE_LABEL,
+                    TYPE_COLORS, DEFAULT_SPRITE_BOX, GAP, MAX_CONTENT, MAX_READING, RADIUS,
+                    breakpoint_for, button_height, card_pad, is_compact, is_touch, row_height, type_scale)
 
-LIGHT = dict(bg="#F2F2F7", card="#FFFFFF", sep="#E5E5EA", fill="#E9E9EB", fill2="#F4F4F6",
-             label="#1C1C1E", secondary="#6E6E73", tertiary="#AEAEB2",
-             blue="#007AFF", green="#34C759", orange="#FF9500", red="#FF3B30", yellow="#FFCC00",
-             purple="#AF52DE", pink="#FF2D55", teal="#32ADE6", gray="#8E8E93",
-             seg="#E3E3E8", segsel="#FFFFFF", onaccent="#FFFFFF")
-DARK = dict(bg="#000000", card="#1C1C1E", sep="#2C2C2E", fill="#2C2C2E", fill2="#242426",
-            label="#FFFFFF", secondary="#98989D", tertiary="#636366",
-            blue="#0A84FF", green="#30D158", orange="#FF9F0A", red="#FF453A", yellow="#FFD60A",
-            purple="#BF5AF2", pink="#FF375F", teal="#64D2FF", gray="#8E8E93",
-            seg="#1C1C1E", segsel="#48484A", onaccent="#FFFFFF")
-
-RARITY_COLOR = {"common": "gray", "uncommon": "green", "rare": "purple", "legendary": "orange"}
-STATE_COLOR = {"egg": "yellow", "sleep": "gray", "idle": "blue", "working": "green",
-               "focus": "orange", "tired": "red", "levelUp": "pink"}
-STATE_LABEL = {"egg": "Incubating", "sleep": "Sleeping", "idle": "Idle", "working": "Working",
-               "focus": "In the zone", "tired": "Tired", "levelUp": "Level up!"}
 SPEED = {"egg": None, "sleep": 2.5, "idle": 1.6, "working": 1.0, "focus": 0.6, "tired": 1.8, "levelUp": 0.5}
 FONT_PREFS = ["SF Pro Text", "Helvetica Neue", "Inter", "Segoe UI", "Ubuntu", "Liberation Sans", "DejaVu Sans"]
 TABS = [("home", "Home"), ("dex", "Pokédex"), ("shop", "Shop"), ("bag", "Bag"), ("battle", "Battle")]
-TYPE_COLORS = {"normal": "#A8A77A", "fire": "#EE8130", "water": "#6390F0", "electric": "#E4B90E", "grass": "#7AC74C",
-               "ice": "#6FBFBC", "fighting": "#C22E28", "poison": "#A33EA1", "ground": "#D4A94A", "flying": "#A98FF3",
-               "psychic": "#F95587", "bug": "#A6B91A", "rock": "#B6A136", "ghost": "#735797", "dragon": "#6F35FC",
-               "dark": "#705746", "steel": "#8E8EB0", "fairy": "#D685AD"}
 SPRITE_BOX = 96                     # native size class of the Gen-V sprites (used by previews)
-SPRITE_BOXES = (256, 320, 384, 448)  # fixed container sizes offered in the menu
-DEFAULT_SPRITE_BOX = 256            # Home shows companion + evolution line + Today without scrolling
-EVO_CARD_H = 104
-SPRITE_PAD = 12
-MINI_BOX = 128                      # stats page header sprite
-FULL_GEOMETRY = "392x700"
+EVO_CARD_H = 116
+MINI_BOX = SPRITE["battle"]         # species-page header and arena sprite
+FULL_GEOMETRY = "420x760"
 FULL_MARGIN = 56                    # window width needed beyond the sprite container in the full view
-PREFS_VERSION = 2
+PREFS_VERSION = 3                   # 3: sprite sizes and window default changed with the layout system
+
+# shorter copy for narrow viewports, so reflow replaces truncation (§15)
+SHORT_BLURB = {"rareCandy": "+100M growth", "mint": "Re-roll nature", "shinyCharm": "Better shiny odds",
+               "pokeBall": "Catch a wild Pokémon", "greatBall": "1.5× catch chance", "ultraBall": "2× catch chance",
+               "egg:plain": "Start over", "egg:uncommon": "Uncommon or better", "egg:rare": "Rare or better"}
+# shop sections (§7) — names that match the item model, nothing invented
+SHOP_SECTIONS = (("BALLS", ("pokeBall", "greatBall", "ultraBall")),
+                 ("TRAINING", ("rareCandy", "mint", "shinyCharm")),
+                 ("EGGS", ("egg:plain", "egg:uncommon", "egg:rare")))
 
 
 def union_bbox(frames) -> tuple[int, int, int, int] | None:
@@ -150,6 +139,11 @@ def preview_image(im: Image.Image, progress: float, colour: str) -> Image.Image:
     return out
 
 
+def c_trainer(card: dict | None) -> str:
+    """The challenger's trainer name, for the arena caption."""
+    return (card or {}).get("trainer") or "challenger"
+
+
 def resolve_sprites(app, extra: tuple = ()) -> dict:
     """Download (or hit the disk cache for) every sprite the window may need. Runs off-thread.
     `extra` = ((species_id, shiny), ...) for species shown outside the normal views (detail page)."""
@@ -212,6 +206,10 @@ class PokeWindow:
         self.armed: tuple[str, float] | None = None
         self.last_width = 0
         self.resize_job = None
+        self.vw = 0                                 # viewport (canvas) width the last render used
+        self.bp = "sm"                              # its breakpoint: xs | sm | md | lg
+        self.show_details = False                   # Home telemetry disclosure on narrow viewports
+        self._tips: dict[str, str] = {}             # tooltip text by canvas tag
         self.settled_geometry: str | None = None   # set from <Configure>, i.e. after the WM applied it
         self.poll_job = self.periodic_job = None
         self.refresh_again = False
@@ -225,17 +223,8 @@ class PokeWindow:
         r.geometry(self._restore_geometry(prefs))
         r.minsize(240, 300)
         self.family = self._pick_font()
-        self.F = {
-            "largeTitle": tkfont.Font(family=self.family, size=24, weight="bold"),
-            "title": tkfont.Font(family=self.family, size=18, weight="bold"),
-            "title2": tkfont.Font(family=self.family, size=15, weight="bold"),
-            "headline": tkfont.Font(family=self.family, size=12, weight="bold"),
-            "body": tkfont.Font(family=self.family, size=12),
-            "sub": tkfont.Font(family=self.family, size=11),
-            "caption": tkfont.Font(family=self.family, size=9),
-            "captionB": tkfont.Font(family=self.family, size=9, weight="bold"),
-            "num": tkfont.Font(family=self.family, size=28, weight="bold"),
-        }
+        self.F = {k: tkfont.Font(family=self.family, size=size, weight=weight)
+                  for k, (size, weight) in type_scale(400).items()}
         self.c = tk.Canvas(r, bg=self.P["bg"], highlightthickness=0, bd=0, yscrollincrement=24)
         self.c.pack(fill="both", expand=True)
         self.c.bind("<MouseWheel>", lambda e: self.c.yview_scroll(-1 if e.delta > 0 else 1, "units"))
@@ -243,9 +232,17 @@ class PokeWindow:
         self.c.bind("<Button-5>", lambda e: self.c.yview_scroll(1, "units"))
         self.c.bind("<Configure>", self._on_configure)
         self.c.bind("<Double-Button-1>", lambda e: self.toggle_compact() if self.compact else None)
-        r.bind("<Escape>", lambda e: self.quit())
+        r.bind("<Escape>", lambda e: self._escape())
         r.bind("<Control-w>", lambda e: self.quit())
         r.bind("<Control-r>", lambda e: self.refresh())
+        # keyboard navigation (§18): digits jump to a section, arrows step through them
+        for i, (key, _label) in enumerate(TABS, start=1):
+            r.bind(str(i), lambda e, k=key: self.set_tab(k))
+        r.bind("<Right>", lambda e: self._step_tab(1))
+        r.bind("<Left>", lambda e: self._step_tab(-1))
+        r.bind("<Prior>", lambda e: self.c.yview_scroll(-3, "units"))
+        r.bind("<Next>", lambda e: self.c.yview_scroll(3, "units"))
+        r.bind("<Home>", lambda e: self.c.yview_moveto(0))
         r.protocol("WM_DELETE_WINDOW", self.quit)
 
         self.menu = tk.Menu(r, tearoff=0)
@@ -258,6 +255,7 @@ class PokeWindow:
             size_menu.add_command(label=f"{px} px", command=lambda px=px: self.set_sprite_box(px))
         self.menu.add_cascade(label="Sprite size", menu=size_menu)
         self.menu.add_separator()
+        self.menu.add_command(label="About", command=self._about)
         self.menu.add_command(label="Quit", command=self.quit, accelerator="Esc")
 
         self.render()
@@ -314,6 +312,28 @@ class PokeWindow:
         if self.settled_geometry:
             p["geometry_compact" if self.compact else "geometry_full"] = self.settled_geometry
         self._write_prefs(p)
+
+    def _apply_viewport(self, width: int) -> None:
+        """Adopt a viewport width: remember its breakpoint and resize the type ladder once.
+        Nothing else in the drawing layer reads pixel widths to decide density."""
+        self.vw = width
+        self.bp = breakpoint_for(width)
+        scale = type_scale(width)
+        for key, (size, weight) in scale.items():
+            f = self.F.get(key)
+            if f is None:
+                self.F[key] = tkfont.Font(family=self.family, size=size, weight=weight)
+            elif f.cget("size") != size:
+                f.configure(size=size)
+
+    @property
+    def narrow(self) -> bool:
+        """Compact viewport: reduce density, collapse secondary information (§1)."""
+        return self.bp == "xs"
+
+    @property
+    def pad(self) -> int:
+        return card_pad(self.vw)
 
     def _pick_font(self) -> str:
         fams = set(tkfont.families(self.root))
@@ -481,6 +501,12 @@ class PokeWindow:
         self._toast(f"Notifications {'on' if on else 'off'}")
         self.render()
 
+    def _about(self) -> None:
+        """Version and data source — the implementation detail the footer no longer carries."""
+        from . import __version__
+        self._toast(f"PokeToken {__version__} · reads Claude Code logs · {self.app.dir}", seconds=8)
+        self.render()
+
     def _act(self, tag: str) -> None:
         """Buttons arm on first click and fire on the second within 3 s (no accidental spending)."""
         if not (self.armed and self.armed[0] == tag):
@@ -503,6 +529,18 @@ class PokeWindow:
         self.render()
         self.refresh()
 
+    def _step_tab(self, delta: int) -> None:
+        keys = [k for k, _ in TABS]
+        here = keys.index(self.tab) if self.tab in keys else 0
+        self.set_tab(keys[(here + delta) % len(keys)])
+
+    def _escape(self) -> None:
+        """Esc backs out of a species page first, and only closes the window from a top level."""
+        if self.detail is not None:
+            self.close_detail()
+        else:
+            self.quit()
+
     def bring_to_front(self) -> None:
         r = self.root
         r.deiconify()
@@ -515,6 +553,7 @@ class PokeWindow:
         r.focus_force()
 
     def quit(self) -> None:
+        self._hide_tip()
         self._save_prefs()
         for job in (self.poll_job, self.periodic_job, self.anim_job, self.resize_job):
             if job:
@@ -671,15 +710,14 @@ class PokeWindow:
         c.delete("all")
         self.sprite_item = None
         w = max(240, c.winfo_width() or 392)
-        x0, cw = 16, w - 32
+        self._apply_viewport(w)
         if self.compact:
             y = self.draw_compact(w)
         else:
             y = self.draw_header(w)
-            narrow = self.detail is not None or self.tab in ("shop", "bag", "battle")
-            if narrow:                                   # reading pages stay a readable width, centred
-                cw = min(cw, 560)
-                x0 = (w - cw) / 2
+            # reading pages (one species, one story) stay narrow; the rest use the content frame
+            cap = MAX_READING if self.detail is not None else MAX_CONTENT
+            x0, cw = L.content_frame(w, cap)
             if self.detail is not None:
                 y = self.draw_species(y, x0, cw)
             else:
@@ -690,7 +728,6 @@ class PokeWindow:
             self.draw_toast(w)
         c.configure(scrollregion=(0, 0, w, max(y + 8, c.winfo_height())))
         self._start_sprite_animation()
-
     def draw_toast(self, w):
         s = self.toast[0]
         tw = self.measure(s, "captionB") + 28
@@ -700,39 +737,55 @@ class PokeWindow:
         self.text(w / 2, y + 15, s, "captionB", "card", anchor="center")
 
     def draw_header(self, w) -> int:
-        y = 14
-        self.text(16, y - 2, "PokeToken", "largeTitle", "label")
-        # "more" button (three dots in a circle)
-        cx, cy = w - 30, y + 16
-        self.c.create_oval(cx - 14, cy - 14, cx + 14, cy + 14, fill=self.P["fill"], outline="", tags=("more",))
-        for dx in (-6, 0, 6):
+        """Brand on the left, sync + refresh + menu on the right, then the tab bar. Everything is
+        measured and packed right-to-left so nothing can collide at 360 px (§2)."""
+        pad = 12 if self.narrow else 16
+        y = 10 if self.narrow else 14
+        brand_font = "title" if self.narrow else "largeTitle"
+        self.text(pad, y, "PokeToken", brand_font, "label")
+        brand_bottom = y + self.F[brand_font].metrics("linespace")
+        # menu button
+        r = 13 if self.narrow else 14
+        cx = w - pad - r
+        cy = y + self.F[brand_font].metrics("linespace") / 2
+        self.c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=self.P["fill"], outline="", tags=("more",))
+        for dx in (-5, 0, 5):
             self.c.create_oval(cx + dx - 1.6, cy - 1.6, cx + dx + 1.6, cy + 1.6, fill=self.P["secondary"],
                                outline="", tags=("more",))
         self.c.tag_bind("more", "<Button-1>", self._show_menu)
         self._hand("more")
+        self.sync_right = cx - r - (10 if self.narrow else 14)
+        self.sync_cy = cy
         self._draw_sync(w)
-        y += 40
-        # segmented control (capped and centred when the window is wide)
-        segw = min(w - 32, 560)
-        x, h = (w - segw) / 2, 30
-        self.rrect(x, y, x + segw, y + h, 9, fill="seg")
+        y = brand_bottom + (8 if self.narrow else 10)
+        return self.draw_tabs(y, w) + (8 if self.narrow else 10)
+
+    def draw_tabs(self, y, w) -> int:
+        """The five destinations stay directly reachable at every width (§3); only the height and
+        the label size change, so the touch target grows instead of the text shrinking."""
+        pad = 12 if self.narrow else 16
+        segw = min(w - 2 * pad, 640)
+        x = (w - segw) / 2
+        h = 38 if is_touch(w) else 32
+        self.rrect(x, y, x + segw, y + h, RADIUS["control"], fill="seg")
         n = len(TABS)
         each = (segw - 4) / n
+        font = "captionB" if self.narrow else "body"
         for i, (key, label) in enumerate(TABS):
             sx = x + 2 + i * each
             tag = f"seg:{key}"
-            if key == self.tab:
-                self.rrect(sx, y + 2, sx + each, y + h - 2, 7, fill="segsel", outline="sep", tags=(tag,))
-                self.text(sx + each / 2, y + h / 2, label, "captionB", "label", anchor="center", tags=(tag,))
-            else:
-                self.rrect(sx, y + 2, sx + each, y + h - 2, 7, fill="seg", tags=(tag,))
-                self.text(sx + each / 2, y + h / 2, label, "caption", "label", anchor="center", tags=(tag,))
+            selected = key == self.tab
+            self.rrect(sx, y + 2, sx + each, y + h - 2, RADIUS["control"] - 2,
+                       fill="segsel" if selected else "seg", outline="sep" if selected else None, tags=(tag,))
+            self.text(sx + each / 2, y + h / 2, self._ellipsize(label, font, each - 6), font,
+                      "label" if selected else "secondary", anchor="center", tags=(tag,))
             self.c.tag_bind(tag, "<Button-1>", lambda e, k=key: self.set_tab(k))
             self._hand(tag)
-        return y + h + 10
-
+        return y + h
     def _draw_sync(self, w: int | None = None) -> None:
-        """Header status: green dot Live · time, amber Refreshing…, red Sync failed — plus Refresh."""
+        """Header status: a green dot with the last refresh time when live, amber while
+        refreshing, red when the last attempt failed — with a Refresh control beside it. On a
+        compact viewport the word collapses to an icon that keeps its tooltip (§2)."""
         c = self.c
         c.delete("sync")
         if self.compact:
@@ -740,22 +793,77 @@ class PokeWindow:
         w = w or max(240, c.winfo_width() or 392)
         colour, label = {"ok": ("green", "Live"), "busy": ("orange", "Refreshing…"),
                          "error": ("red", "Sync failed")}.get(self.sync_state, ("gray", "…"))
-        if self.sync_state == "ok" and self.last_ok:
-            label += " · " + datetime.fromtimestamp(self.last_ok).strftime("%H:%M")
-        elif self.sync_state == "error" and self.last_ok:
-            label += " · last " + datetime.fromtimestamp(self.last_ok).strftime("%H:%M")
-        x = w - 30 - 14 - 12                                   # left of the ⋯ button
-        cy = 14 + 16
+        stamp = datetime.fromtimestamp(self.last_ok).strftime("%H:%M") if self.last_ok else ""
+        if self.narrow:                                  # dot · time · ↻
+            text = stamp or label
+            tip = f"{label}{' · last sync ' + stamp if stamp else ''}"
+        else:
+            text = f"{label} · {stamp}" if stamp and self.sync_state == "ok" else \
+                   f"{label} · last {stamp}" if stamp and self.sync_state == "error" else label
+            tip = text
+        x = getattr(self, "sync_right", w - 60)
+        cy = getattr(self, "sync_cy", 30)
         if self.sync_state != "busy":
-            rw = self.measure("Refresh", "captionB")
-            c.create_text(x, cy, text="Refresh", font=self.F["captionB"], fill=self.P["blue"], anchor="e", tags=("sync", "refresh"))
-            c.tag_bind("refresh", "<Button-1>", lambda e: self.refresh())
-            self._hand("refresh")
-            x -= rw + 14
-        c.create_text(x, cy, text=label, font=self.F["caption"], fill=self.P["secondary"], anchor="e", tags=("sync",))
-        x -= self.measure(label, "caption") + 10
-        c.create_oval(x - 4, cy - 4, x + 4, cy + 4, fill=self.P[colour], outline="", tags=("sync",))
+            x = self._draw_refresh_control(x, cy)
+        c.create_text(x, cy, text=text, font=self.F["caption"], fill=self.P["secondary"], anchor="e", tags=("sync", "syncinfo"))
+        x -= self.measure(text, "caption") + 8
+        c.create_oval(x - 4, cy - 4, x + 4, cy + 4, fill=self.P[colour], outline="", tags=("sync", "syncinfo"))
+        self._tooltip("syncinfo", tip)
 
+    def _draw_refresh_control(self, right: float, cy: float) -> float:
+        """Refresh: a labelled button on wide viewports, a circular-arrow icon on narrow ones.
+        Both carry the same tooltip and the same click target (§2, §18)."""
+        c = self.c
+        if self.narrow:
+            r = 9
+            x = right - r
+            c.create_oval(x - r - 6, cy - r - 6, x + r + 6, cy + r + 6, fill=self.P["fill"], outline="", tags=("sync", "refresh"))
+            c.create_arc(x - r, cy - r, x + r, cy + r, start=45, extent=280, style="arc",
+                         outline=self.P["blue"], width=2, tags=("sync", "refresh"))
+            c.create_polygon(x + r - 3, cy - r + 1, x + r + 4, cy - r + 2, x + r, cy - r + 7,
+                             fill=self.P["blue"], outline="", tags=("sync", "refresh"))
+            left = x - r - 6
+        else:
+            label_w = self.measure("Refresh", "captionB")
+            c.create_text(right, cy, text="Refresh", font=self.F["captionB"], fill=self.P["blue"],
+                          anchor="e", tags=("sync", "refresh"))
+            left = right - label_w
+        c.tag_bind("refresh", "<Button-1>", lambda e: self.refresh())
+        self._hand("refresh")
+        self._tooltip("refresh", "Refresh now (Ctrl+R)")
+        return left - (10 if self.narrow else 14)
+
+    def _tooltip(self, tag: str, text: str) -> None:
+        """Hover label for an icon-only control (§18). The text is kept per tag rather than in a
+        closure, so hovering is one bound method and the label can be shown without a mouse."""
+        self._tips[tag] = text
+        self.c.tag_bind(tag, "<Enter>", lambda _e=None, t=tag: self._enter_tip(t), add="+")
+        self.c.tag_bind(tag, "<Leave>", lambda _e=None: self._hide_tip(), add="+")
+
+    def _enter_tip(self, tag: str) -> None:
+        self._tip_text = self._tips.get(tag, "")
+        self._show_tip()
+
+    def _show_tip(self) -> None:
+        self._hide_tip()
+        text = getattr(self, "_tip_text", "")
+        if not text:
+            return
+        t = self._tip = tk.Toplevel(self.root)
+        t.overrideredirect(True)
+        t.attributes("-topmost", True)
+        tk.Label(t, text=text, fg=self.P["card"], bg=self.P["label"], font=self.F["caption"],
+                 padx=8, pady=4).pack()
+        self.root.update_idletasks()
+        t.geometry(f"+{self.root.winfo_pointerx() + 12}+{self.root.winfo_pointery() + 18}")
+
+    def _hide_tip(self) -> None:
+        t = self.__dict__.pop("_tip", None)
+        if t is not None:
+            try:
+                t.destroy()
+            except tk.TclError:
+                pass
     # ------------------------------------------------------------------ home
     def draw_home(self, y, x0, cw) -> int:
         """Home is a set of cards. Narrow window: one column in a fixed order. Wide window: the
@@ -788,7 +896,10 @@ class PokeWindow:
         return bottom_y
 
     def _home_blocks(self) -> list:
-        """(draw function, pinned column or None) in narrow-window order."""
+        """(draw function, pinned column or None) in narrow-window order. The game leads: the
+        companion, then its progression, then rewards; telemetry follows (§4). On a compact
+        viewport the per-model and per-project breakdowns live inside the Today card's
+        disclosure instead of standing as cards of their own."""
         comp = self.app.companion
         snap = self.payload["snap"] if self.payload else None
         blocks = []
@@ -797,100 +908,152 @@ class PokeWindow:
             blocks.append((lambda y, x, w: self.draw_encounter_card(y, x, w, enc), None))
         blocks.append((self.draw_hero, 0))
         if comp.state.active and comp.line:
-            s = comp.state
-            accent = STATE_COLOR.get(comp.display_state, "blue")
-            blocks.append((lambda y, x, w: self.draw_evo_line(
-                y, x, w, [(sid, st == "current") for sid, st in comp.line_items()],
-                lambda cid: comp.line.name(cid, s.language), accent, clickable=False), 0))
-        blocks.append((self.draw_today, None))
+            blocks.append((self.draw_evolution, 0))
         blocks.append((self.draw_rewards, None))
-        if snap and snap.models_cost_today:
-            blocks.append((self.draw_cost_by_model, None))
-        if snap and snap.projects_today:
-            blocks.append((self.draw_projects, None))
+        blocks.append((self.draw_today, None))
+        if not self.narrow:
+            if snap and snap.models_cost_today:
+                blocks.append((self.draw_cost_by_model, None))
+            if snap and snap.projects_today:
+                blocks.append((self.draw_projects, None))
         blocks.append((self.draw_activity, None))
         return blocks
 
+    def draw_evolution(self, y, x0, cw) -> int:
+        """The companion's line as progression: how far to the next form, what comes next."""
+        comp, s = self.app.companion, self.app.companion.state
+        accent = STATE_COLOR.get(comp.display_state, "blue")
+        items = [(sid, st == "current") for sid, st in comp.line_items()]
+        remaining = f"{fmt.compact(comp.tokens_to_next)} to " + ("graduate" if comp.is_final_stage else "evolve")
+        return self.draw_evo_line(y, x0, cw, items, lambda cid: comp.line.name(cid, s.language), accent,
+                                  clickable=False, progress=comp.progress, remaining=remaining)
     def draw_hero(self, y, x0, cw) -> int:
+        """The companion: the largest thing on the page at every width. The sprite container is
+        the user's chosen size, clamped to what the viewport can actually hold, so a narrow
+        window shrinks the art instead of clipping the card (§1, §11)."""
         comp, s = self.app.companion, self.app.companion.state
         state = comp.display_state
         accent = STATE_COLOR.get(state, "blue")
+        pad = self.pad
         hero_tag = ("hero",) if s.active else ()
         card = self.card(x0, y, cw, 10, tags=hero_tag)
-        cy = y + 10
-        size = self.sprite_draw_box = self.sprite_box
+        cy = y + pad - 4
+        cap = 200 if self.narrow else self.sprite_box          # compact viewports get the small hero tier
+        size = self.sprite_draw_box = max(120, min(self.sprite_box, cap, int(cw - 2 * pad)))
         self.sprite_subject = ("egg",) if s.active is None else ("mon", s.active.current_id, s.active.shiny_visible)
         self.sprite_item = self.c.create_image(x0 + cw / 2, cy + size / 2, image="", tags=hero_tag)
         if s.active:
             self.c.tag_bind("hero", "<Button-1>", lambda e: self.open_stats())
             self._hand("hero")
-            self.text(x0 + cw - 16, y + 10, "Stats ›", "captionB", "blue", anchor="ne", tags=hero_tag)
+            self.text(x0 + cw - pad, y + pad - 4, "Stats ›", "captionB", "blue", anchor="ne", tags=hero_tag)
+            self._tooltip("hero", "Open this Pokémon's stats")
         cy += size + 2
         name = comp.display_name()
-        name_font = "title" if self.measure(name, "title") < cw - 40 else "title2"
+        name_font = "title" if self.measure(name, "title") < cw - 2 * pad - 24 else "title2"
         if s.active and s.active.shiny_visible:
             tw = self.measure(name, name_font) + 6 + self.measure("✦", "title2")
             self.text(x0 + cw / 2 - tw / 2, cy, name, name_font, "label", anchor="nw")
             self.text(x0 + cw / 2 + tw / 2, cy + 3, "✦", "title2", "yellow", anchor="ne")
         else:
             self.text(x0 + cw / 2, cy, name, name_font, "label", anchor="n")
-        cy += 30
+        cy += self.F[name_font].metrics("linespace") + 10
         pills = []
         if s.active:
             a = s.active
             pills.append((a.rarity.title(), RARITY_COLOR[a.rarity]))
-            if a.nature:
+            if a.nature and not self.narrow:
                 pills.append((a.nature.title(), "teal"))
         pills.append((STATE_LABEL.get(state, state), accent))
         total = sum(self.measure(t, "captionB") + 16 for t, _ in pills) + 6 * (len(pills) - 1)
         px = x0 + cw / 2 - total / 2
         for t, colr in pills:
             px += self.pill(px, cy, t, colr) + 6
-        cy += 28
+        cy += 30
         if s.active:
             left = f"Stage {s.active.stage_index + 1} of {s.active.total_forms}"
-            right = f"{fmt.compact(comp.tokens_to_next)} to " + ("graduation" if comp.is_final_stage else "next form")
             frac = comp.progress
+            used, goal = s.active.used_at_stage, comp.threshold
         else:
             left = "Egg"
-            right = f"{fmt.compact(comp.egg_tokens_to_hatch)} to hatch"
             frac = comp.egg_progress
-        self.text(x0 + 18, cy, left, "captionB", "secondary")
-        self.text(x0 + cw - 18, cy, right, "caption", "secondary", anchor="ne")
+            used, goal = s.egg_usage, C.EGG_HATCH_THRESHOLD
+        self.text(x0 + pad, cy, left, "captionB", "secondary")
+        self.text(x0 + cw - pad, cy, fmt.percent(frac * 100), "captionB", accent, anchor="ne")
         cy += 18
-        self.capsule(x0 + 18, cy, cw - 36, 8, frac, accent)
+        self.capsule(x0 + pad, cy, cw - 2 * pad, 8, frac, accent)
         cy += 14
-        used = s.active.used_at_stage if s.active else s.egg_usage
-        self.text(x0 + 18, cy, f"{fmt.compact(used)} / {fmt.compact(comp.threshold)}  ·  {fmt.percent(frac * 100)}",
-                  "caption", "tertiary")
+        self.text(x0 + pad, cy, f"{fmt.compact(used)} / {fmt.compact(goal)}", "caption", "tertiary")
+        # the remainder belongs to the evolution card; an egg has none, so it says it here
+        if s.active is None:
+            self.text(x0 + cw - pad, cy, f"{fmt.compact(max(0, goal - used))} to hatch", "caption", "secondary", anchor="ne")
         if not s.install_baseline_set:
-            self.text(x0 + cw - 18, cy, "waiting for first usage", "caption", "tertiary", anchor="ne")
+            cy += 16
+            self.text(x0 + pad, cy, "waiting for the first usage reading", "caption", "tertiary")
         cy += 20
         self.fit_card(card, x0, y, cw, cy - y)
         return cy
-
     def draw_today(self, y, x0, cw) -> int:
+        """Today's usage: the two numbers that matter, then burn rate. On a compact viewport the
+        rest is behind a disclosure instead of shrinking into ellipsis (§4, §15)."""
         snap = self.payload["snap"] if self.payload else None
+        pad = self.pad
         card = self.card(x0, y, cw, 10)
-        cy = y + 10
-        self.text(x0 + 18, cy, "TODAY", "captionB", "secondary")
+        cy = y + pad - 4
+        self.text(x0 + pad, cy, "TODAY", "captionB", "secondary")
         if snap:
-            self.text(x0 + cw - 18, cy, snap.today_date, "caption", "tertiary", anchor="ne")
-        cy += 16
+            self.text(x0 + cw - pad, cy, snap.today_date, "caption", "tertiary", anchor="ne")
+        cy += 18
         t = snap.today if snap else None
-        self.text(x0 + 18, cy, fmt.compact(t.total) if t else "—", "num", "label")
-        self.text(x0 + 18 + self.measure(fmt.compact(t.total) if t else "—", "num") + 8, cy + 20, "tokens", "sub", "secondary")
-        self.text(x0 + cw - 18, cy + 8, fmt.cost(t.cost) if t else "—", "title", "green", anchor="ne")
-        cy += 42
-        if t:
-            split = (f"in {fmt.compact(t.input)}  ·  out {fmt.compact(t.output)}  ·  "
-                     f"cache write {fmt.compact(t.cache_write)}  ·  cache read {fmt.compact(t.cache_read)}")
-            self.text(x0 + 18, cy, self._ellipsize(split, "caption", cw - 36), "caption", "secondary")
-            cy += 16
-        cy += 8
+        total = fmt.compact(t.total) if t else "—"
+        num_font = "num" if self.measure(total, "num") < cw * 0.5 else "numSm"
+        self.text(x0 + pad, cy, total, num_font, "label")
+        self.text(x0 + pad + self.measure(total, num_font) + 8, cy + self.F[num_font].metrics("linespace") - 20,
+                  "tokens", "sub", "secondary")
+        self.text(x0 + cw - pad, cy + 6, fmt.cost(t.cost) if t else "—", "title", "green", anchor="ne")
+        cy += self.F[num_font].metrics("linespace") + 8
+        if snap:
+            tpm = snap.tokens_per_minute
+            burn = f"{fmt.compact(int(tpm))}/min · {snap.burn_tier}" if tpm and tpm > 1000 else "quiet"
+            self.text(x0 + pad, cy, "Burn rate", "body", "secondary")
+            self.text(x0 + cw - pad, cy, burn, "body", "label", anchor="ne")
+            cy += 24
+        if t and (not self.narrow or self.show_details):
+            self.sep(x0 + pad, cy - 2, cw - 2 * pad)
+            cy += 8
+            for label, value in (("Input", t.input), ("Output", t.output),
+                                 ("Cache write", t.cache_write), ("Cache read", t.cache_read)):
+                self.text(x0 + pad, cy, label, "caption", "secondary")
+                self.text(x0 + cw - pad, cy, fmt.compact(value), "caption", "label", anchor="ne")
+                cy += 17
+            cy += 2
+        if self.narrow and t:
+            tag = "today:more"
+            label = "Hide details" if self.show_details else "Show details ›"
+            self.text(x0 + pad, cy, label, "captionB", "blue", tags=(tag,))
+            self.c.tag_bind(tag, "<Button-1>", lambda e: self._toggle_details())
+            self._hand(tag)
+            cy += 22
+            if self.show_details and snap:
+                for title, rows_src, unit in (("By model", snap.models_cost_today, "cost"),
+                                              ("By project", snap.projects_today, "tokens")):
+                    if not rows_src:
+                        continue
+                    self.text(x0 + pad, cy, title, "captionB", "secondary")
+                    cy += 18
+                    for name, v in L.top_n(rows_src, 3):
+                        self.text(x0 + pad, cy, self._ellipsize(L.short_model(name) if unit == "cost" else name,
+                                                                "caption", cw - 2 * pad - 70), "caption", "secondary")
+                        self.text(x0 + cw - pad, cy, fmt.cost(v) if unit == "cost" else fmt.compact(int(v)),
+                                  "caption", "label", anchor="ne")
+                        cy += 17
+                    cy += 4
+        cy += 6
         self.fit_card(card, x0, y, cw, cy - y)
         return cy
 
+    def _toggle_details(self) -> None:
+        self.show_details = not self.show_details
+        self.render()
     def draw_bar_list(self, y, x0, cw, title: str, rows: list, right_title: str = "", colour: str = "blue") -> int:
         """A card of ranked bars: rows = [(label, fraction, value text)]."""
         h = 12 + 18 + 24 * max(1, len(rows)) + 8
@@ -988,107 +1151,146 @@ class PokeWindow:
         return y + h
 
     def draw_encounter_card(self, y, x0, cw, enc: dict) -> int:
-        """A wild Pokémon is waiting: who it is, how likely a catch is, and a throw button."""
+        """A wild Pokémon is waiting: who it is, how likely a catch is, and one action. Widths are
+        measured before the text is placed, so the caption reflows instead of truncating (§15)."""
         comp = self.app.companion
-        h = 92
-        self.card(x0, y, cw, h)
-        self.text(x0 + 18, y + 10, "WILD ENCOUNTER", "captionB", "orange")
-        self.text(x0 + cw - 18, y + 10, enc.get("trigger", ""), "caption", "tertiary", anchor="ne")
+        pad = self.pad
+        icon = SPRITE["card"] + 16
+        bh = button_height(self.vw)
         shiny = bool(enc.get("shiny"))
-        ph = self.img(self.payload["paths"].get(("static", enc["species"], shiny)) if self.payload else None, 56, "card")
-        if ph:
-            self.c.create_image(x0 + 18 + 28, y + 58, image=ph)
-        tx = x0 + 18 + 64
-        self.text(tx, y + 30, enc["name"] + ("  ✦" if shiny else ""), "title2", "yellow" if shiny else "label")
-        px = tx
-        px += self.pill(px, y + 56, enc["rarity"].title(), RARITY_COLOR.get(enc["rarity"], "gray")) + 6
         ball = comp.best_ball()
+        chance = f"{C.catch_chance(enc['captureRate'], ball) * 100:.0f}%" if ball else None
         leaves = "leaves tonight" if enc.get("expires") == comp.today else "leaves tomorrow"
-        bw = 96
-        bx, by = x0 + cw - 18 - bw, y + 40
-        caption = (f"{C.catch_chance(enc['captureRate'], ball) * 100:.0f}% · {C.BALLS[ball]['label']}" if ball
-                   else "no balls") + f" · {leaves}"
-        self.text(px + 2, y + 59, self._ellipsize(caption, "caption", bx - px - 12), "caption", "secondary")
+        if ball:
+            caption = f"{chance} with a {C.BALLS[ball]['label']} · {leaves}" if not self.narrow else f"{chance} · {leaves}"
+        else:
+            caption = "no balls in the bag · " + leaves if not self.narrow else "no balls · " + leaves
+        bw = max(84, self.measure("Throw?", "captionB") + 26)
+        h = pad + 16 + max(icon, 46) + 18 + pad - 4
+        self.card(x0, y, cw, h)
+        self.text(x0 + pad, y + pad - 4, "WILD ENCOUNTER", "captionB", "orange")
+        if not self.narrow:
+            trigger_w = cw - 2 * pad - self.measure("WILD ENCOUNTER", "captionB") - 16
+            self.text(x0 + cw - pad, y + pad - 4, self._ellipsize(enc.get("trigger", ""), "caption", trigger_w),
+                      "caption", "tertiary", anchor="ne")
+        ty = y + pad + 14
+        ph = self.img(self.payload["paths"].get(("static", enc["species"], shiny)) if self.payload else None,
+                      SPRITE["card"] + 8, "card")
+        if ph:
+            self.c.create_image(x0 + pad + icon / 2, ty + 22, image=ph)
+        tx = x0 + pad + icon + 8
+        bx = x0 + cw - pad - bw
+        name_w = max(60, bx - tx - 10)
+        self.text(tx, ty, self._ellipsize(enc["name"] + ("  ✦" if shiny else ""), "title2", name_w), "title2",
+                  "yellow" if shiny else "label")
+        py = ty + self.F["title2"].metrics("linespace") + 2
+        pw = self.pill(tx, py, enc["rarity"].title(), RARITY_COLOR.get(enc["rarity"], "gray"))
+        self.text(x0 + pad, y + h - pad - 6, self._ellipsize(caption, "caption", cw - 2 * pad), "caption", "secondary")
+        by = ty + 8
         if ball:
             tag = f"throw:{ball}"
             armed = self.armed and self.armed[0] == tag
-            self.button(bx, by, bw, 28, "Throw?" if armed else "Throw", tag, "armed" if armed else "filled")
+            self.button(bx, by, bw, bh, "Throw?" if armed else "Throw", tag, "armed" if armed else "filled")
+            self._tooltip(tag, f"Throw a {C.BALLS[ball]['label']} ({chance} chance)")
         else:
-            self.rrect(bx, by, bx + bw, by + 28, 14, fill="fill", tags=("to-shop",))
-            self.text(bx + bw / 2, by + 14, "Shop ›", "captionB", "blue", anchor="center", tags=("to-shop",))
+            self.rrect(bx, by, bx + bw, by + bh, RADIUS["pill"], fill="fill", tags=("to-shop",))
+            self.text(bx + bw / 2, by + bh / 2, "Shop ›", "captionB", "blue", anchor="center", tags=("to-shop",))
             self.c.tag_bind("to-shop", "<Button-1>", lambda e: self.set_tab("shop"))
             self._hand("to-shop")
+            self._tooltip("to-shop", "Buy a ball so you can catch it")
         return y + h
-
     # ------------------------------------------------------------------ dex
     def draw_dex(self, y, x0, cw) -> int:
+        """The collection: a responsive grid of owned species, then the catch log. Cells are
+        sized for the sprite, so the grid fills the width instead of leaving one card adrift in
+        an empty viewport (§6)."""
         comp, s = self.app.companion, self.app.companion.state
+        pad = self.pad
         species: dict[int, dict] = {}
         for e in s.dex:
             for sid in e.chain_order:
-                d = species.setdefault(sid, {"name": e.name(sid, s.language), "rarity": e.rarity, "shiny": False, "raising": False})
+                d = species.setdefault(sid, {"name": e.name(sid, s.language), "rarity": e.rarity,
+                                             "shiny": False, "raising": False, "wild": e.is_wild})
                 d["shiny"] = d["shiny"] or e.is_shiny
         if s.active and comp.line:
             a = s.active
             for sid in a.path_ids[: a.stage_index + 1]:
-                d = species.setdefault(sid, {"name": comp.line.name(sid, s.language), "rarity": a.rarity, "shiny": False, "raising": True})
+                d = species.setdefault(sid, {"name": comp.line.name(sid, s.language), "rarity": a.rarity,
+                                             "shiny": False, "raising": True, "wild": False})
                 d["shiny"] = d["shiny"] or a.shiny_visible
                 d["raising"] = True
-        if not species:
-            self.card(x0, y, cw, 140)
-            self.text(x0 + cw / 2, y + 52, "No Pokémon yet", "title2", "label", anchor="center")
-            self.text(x0 + cw / 2, y + 82, "Graduate your first companion to fill the Pokédex.", "caption", "secondary", anchor="center")
-            return y + 152
-        self.text(x0 + 2, y, f"{len(species)} species", "captionB", "secondary")
+        shinies = sum(1 for d in species.values() if d["shiny"])
+
+        self.text(x0 + 2, y, "POKÉDEX", "captionB", "secondary")
+        right = f"{len(species)} species" + (f" · {shinies} shiny" if shinies else "")
+        self.text(x0 + cw - 2, y, right, "caption", "tertiary", anchor="ne")
         y += 20
-        cols = max(3, int(cw // 160))
-        gap = 10
-        cellw = (cw - gap * (cols - 1)) / cols
-        cellh = cellw + 30
-        for i, sid in enumerate(sorted(species)):
+        if not species:
+            h = max(180, min(300, (self.c.winfo_height() or 600) - y - 120))
+            self.card(x0, y, cw, h)
+            self.text(x0 + cw / 2, y + h / 2 - 26, "No Pokémon yet", "title2", "label", anchor="center")
+            self.text(x0 + cw / 2, y + h / 2 + 2, "Your first companion joins the Pokédex when it graduates.",
+                      "caption", "secondary", anchor="center")
+            self.text(x0 + cw / 2, y + h / 2 + 22, "Wild Pokémon you catch land here too.",
+                      "caption", "tertiary", anchor="center")
+            return y + h + 12
+
+        sprite = SPRITE["dex"] if not self.narrow else SPRITE["line"] + 12
+        min_cell = sprite + 88
+        cols, cellw = L.grid(cw, min_cell, max_cols=8)
+        cellh = sprite + 66
+        ids = sorted(species)
+        for i, sid in enumerate(ids):
             d = species[sid]
-            cx = x0 + (i % cols) * (cellw + gap)
-            cy = y + (i // cols) * (cellh + gap)
+            cx, cy = L.cell_xy(i, cols, cellw, cellh, x0, y)
             tag = f"dex:{sid}"
-            self.card(cx, cy, cellw, cellh, 14, tags=(tag,))
+            self.card(cx, cy, cellw, cellh, RADIUS["cell"], tags=(tag,))
             ph = self.img(self.payload["paths"].get(("static", sid, d["shiny"])) if self.payload else None,
-                          int(cellw - 24), "card")
+                          sprite, "card")
             if ph:
-                self.c.create_image(cx + cellw / 2, cy + 8 + (cellw - 24) / 2, image=ph, tags=(tag,))
-            self.text(cx + 8, cy + 8, f"#{sid}", "caption", "tertiary", tags=(tag,))
+                self.c.create_image(cx + cellw / 2, cy + 22 + sprite / 2, image=ph, tags=(tag,))
+            self.text(cx + 10, cy + 8, f"#{sid:03d}", "caption", "tertiary", tags=(tag,))
             if d["shiny"]:
-                self.text(cx + cellw - 8, cy + 6, "✦", "captionB", "yellow", anchor="ne", tags=(tag,))
-            self.dot(cx + 12, cy + cellh - 14, 3.5, RARITY_COLOR[d["rarity"]])
-            self.text(cx + 20, cy + cellh - 22, self._ellipsize(d["name"], "captionB", cellw - 28), "captionB",
-                      "label" if not d["raising"] else "blue", tags=(tag,))
+                self.text(cx + cellw - 10, cy + 6, "✦", "captionB", "yellow", anchor="ne", tags=(tag,))
+            self.text(cx + cellw / 2, cy + 26 + sprite, self._ellipsize(d["name"], "captionB", cellw - 16),
+                      "captionB", "blue" if d["raising"] else "label", anchor="n", tags=(tag,))
+            note = "raising" if d["raising"] else ("caught" if d["wild"] else d["rarity"])
+            self.dot(cx + cellw / 2 - self.measure(note, "caption") / 2 - 7, cy + 48 + sprite, 3,
+                     "blue" if d["raising"] else RARITY_COLOR[d["rarity"]])
+            self.text(cx + cellw / 2 + 3, cy + 42 + sprite, note, "caption", "tertiary", anchor="n", tags=(tag,))
             self.c.tag_bind(tag, "<Button-1>", lambda e, sid=sid: self.open_detail(sid))
             self._hand(tag)
-        rows_n = (len(species) + cols - 1) // cols
-        y += rows_n * (cellh + gap) + 8
+        y += L.grid_height(len(ids), cols, cellh) + 16
 
         if s.dex:
             self.text(x0 + 2, y, "CATCH LOG", "captionB", "secondary")
-            y += 18
+            y += 20
             entries = sorted(s.dex, key=lambda e: e.caught_at or "", reverse=True)
-            h = 8 + 52 * len(entries)
+            rh = row_height(self.vw) + 8
+            h = 8 + rh * len(entries)
             self.card(x0, y, cw, h)
             ry = y + 8
             for i, e in enumerate(entries):
-                ph = self.img(self.payload["paths"].get(("static", e.final_id, e.is_shiny)) if self.payload else None, 40, "card")
+                verb = "released" if e.is_released else "caught" if e.is_wild else "graduated"
+                colr = "gray" if e.is_released else "orange" if e.is_wild else "green"
+                ph = self.img(self.payload["paths"].get(("static", e.final_id, e.is_shiny)) if self.payload else None,
+                              SPRITE["card"], "card")
                 if ph:
-                    self.c.create_image(x0 + 34, ry + 26, image=ph)
-                self.text(x0 + 62, ry + 9, e.name(e.final_id, s.language) + ("  ✦" if e.is_shiny else ""), "headline",
-                          "label" if not e.is_shiny else "yellow")
-                sub = f"{e.rarity} · {(e.nature or '').title()} · {(e.caught_at or '')[:10]}"
-                self.text(x0 + 62, ry + 29, sub, "caption", "secondary")
-                self.pill(x0 + cw - 18 - self.measure("released" if e.is_released else "graduated", "captionB") - 16,
-                          ry + 16, "released" if e.is_released else "graduated", "gray" if e.is_released else "green")
+                    self.c.create_image(x0 + pad + SPRITE["card"] / 2, ry + rh / 2 - 4, image=ph)
+                tx = x0 + pad + SPRITE["card"] + 12
+                pill_w = self.measure(verb, "captionB") + 16
+                self.pill(x0 + cw - pad - pill_w, ry + rh / 2 - 14, verb, colr)
+                name = e.name(e.final_id, s.language) + ("  ✦" if e.is_shiny else "")
+                self.text(tx, ry + 8, self._ellipsize(name, "headline", cw - pad * 2 - SPRITE["card"] - pill_w - 24),
+                          "headline", "yellow" if e.is_shiny else "label")
+                sub = " · ".join(x for x in (e.rarity, (e.nature or "").title(), (e.caught_at or "")[:10]) if x)
+                self.text(tx, ry + 26, self._ellipsize(sub, "caption", cw - pad * 2 - SPRITE["card"] - pill_w - 24),
+                          "caption", "secondary")
                 if i < len(entries) - 1:
-                    self.sep(x0 + 62, ry + 51, cw - 78)
-                ry += 52
+                    self.sep(tx, ry + rh - 4, cw - (tx - x0) - pad)
+                ry += rh
             y += h + 12
         return y
-
     # --------------------------------------------------------------- detail
     def _species_shiny(self, sid: int | None) -> bool:
         s = self.app.companion.state
@@ -1128,39 +1330,61 @@ class PokeWindow:
     def close_stats(self) -> None:
         self.close_detail()
 
-    def draw_evo_line(self, y, x0, cw, items, name_of, accent="blue", clickable=True) -> int:
-        """One evolution-line card. items = [(species_id | None for a hidden future form, is_current)]."""
-        self.card(x0, y, cw, EVO_CARD_H)
-        self.text(x0 + 18, y + 10, "EVOLUTION LINE", "captionB", "secondary")
+    def draw_evo_line(self, y, x0, cw, items, name_of, accent="blue", clickable=True,
+                      progress: float | None = None, remaining: str = "") -> int:
+        """The line as a journey: current form, a progress track, what comes next. `items` is
+        [(species_id | None for a form not yet revealed, is_current)]; a None stays hidden — the
+        game decides what the player has seen, this only draws it (§5)."""
+        pad = self.pad
+        sprite = SPRITE["line"] if not self.narrow else SPRITE["card"] + 8
+        has_track = progress is not None
+        h = pad + 16 + sprite + 26 + (30 if has_track else 0) + pad - 6
+        self.card(x0, y, cw, h)
+        self.text(x0 + pad, y + pad - 4, "EVOLUTION", "captionB", "secondary")
+        if has_track:
+            self.text(x0 + cw - pad, y + pad - 4, fmt.percent(progress * 100), "captionB", accent, anchor="ne")
         n = max(1, len(items))
-        each = (cw - 24) / n
-        ty = y + 28
+        each = (cw - 2 * pad) / n
+        ty = y + pad + 14
+        cur_x = nxt_x = None
         for i, (cid, current) in enumerate(items):
-            cx = x0 + 12 + each * i + each / 2
+            cx = x0 + pad + each * i + each / 2
             if current:
-                self.rrect(cx - 34, ty - 4, cx + 34, ty + 72, 12,
+                cur_x = cx
+                self.rrect(cx - each / 2 + 4, ty - 6, cx + each / 2 - 4, ty + sprite + 24, RADIUS["cell"],
                            fill=_blend(self.P[accent], self.P["card"], 0.86 if not self.dark else 0.75))
+            elif cur_x is not None and nxt_x is None:
+                nxt_x = cx
             if cid is None:
-                self.draw_future_form(cx, ty + 26, i)
+                self.draw_future_form(cx, ty + sprite / 2, i)
                 label = "???"
             else:
                 tag = f"line:{cid}"
                 ph = self.img(self.payload["paths"].get(("static", cid, self._species_shiny(cid))) if self.payload else None,
-                              LINE_SPRITE, "card")
+                              sprite, "card")
                 if ph:
-                    self.c.create_image(cx, ty + 26, image=ph, tags=(tag,))
+                    self.c.create_image(cx, ty + sprite / 2, image=ph, tags=(tag,))
                 else:
-                    self.text(cx, ty + 26, f"#{cid}", "caption", "tertiary", anchor="center", tags=(tag,))
+                    self.text(cx, ty + sprite / 2, f"#{cid}", "caption", "tertiary", anchor="center", tags=(tag,))
                 label = name_of(cid)
                 if clickable and not current:
                     self.c.tag_bind(tag, "<Button-1>", lambda e, c=cid: self.open_species(c, self.detail_origin))
                     self._hand(tag)
-            self.text(cx, ty + 52, self._ellipsize(label, "caption", each - 8), "caption",
+            self.text(cx, ty + sprite + 4, self._ellipsize(label, "caption", each - 10), "caption",
                       "label" if current else "secondary", anchor="n")
-            if i < n - 1:
-                self.text(x0 + 12 + each * (i + 1), ty + 26, "›", "title2", "tertiary", anchor="center")
-        return y + EVO_CARD_H
-
+        cy = ty + sprite + 24
+        if has_track:
+            # the track runs from the current form to the one after it, so the bar reads as the
+            # distance still to travel rather than a generic percentage
+            tx1 = (cur_x + each / 2 - 2) if cur_x is not None else x0 + pad
+            tx2 = (nxt_x - each / 2 + 2) if nxt_x is not None else x0 + cw - pad
+            if tx2 - tx1 < 40:                       # final form, or too tight: span the card
+                tx1, tx2 = x0 + pad, x0 + cw - pad
+            self.capsule(tx1, cy + 6, tx2 - tx1, 6, progress, accent)
+            if remaining:
+                self.text((tx1 + tx2) / 2, cy + 16, remaining, "caption", "tertiary", anchor="n")
+            cy += 30
+        return y + h
     def draw_species(self, y, x0, cw) -> int:
         """The species page: mini sprite header, stats, evolution line, records. Opened from Home
         (for the Pokémon being raised) or from any Pokédex cell."""
@@ -1306,8 +1530,14 @@ class PokeWindow:
         cy += 4
         lk = view.get("luck") or {}
         if live and view["iv_total"] is not None and lk:
-            luck_txt = (f"Luck at hatch: {lk.get('bonusRolls', 0)} bonus roll{'s' if lk.get('bonusRolls', 0) != 1 else ''} "
-                        f"· {lk.get('streak', 0)}-day streak · {lk.get('cacheRatio', 0) * 100:.0f}% cache reads · shiny 1/{lk.get('shinyDenominator', '?')}")
+            rolls = lk.get("bonusRolls", 0)
+            if self.narrow:                       # shorter copy rather than an ellipsis (§15)
+                luck_txt = (f"+{rolls} roll{'s' if rolls != 1 else ''} · {lk.get('streak', 0)}-day streak "
+                            f"· {lk.get('cacheRatio', 0) * 100:.0f}% cache")
+            else:
+                luck_txt = (f"Luck at hatch: {rolls} bonus roll{'s' if rolls != 1 else ''} "
+                            f"· {lk.get('streak', 0)}-day streak · {lk.get('cacheRatio', 0) * 100:.0f}% cache reads "
+                            f"· shiny 1/{lk.get('shinyDenominator', '?')}")
             self.text(x0 + 18, cy, self._ellipsize(luck_txt, "caption", cw - 36), "caption", "tertiary")
             cy += 20
         elif view["iv_total"] is None:
@@ -1319,41 +1549,96 @@ class PokeWindow:
         return cy
 
     # ----------------------------------------------------------------- shop
-    def draw_shop(self, y, x0, cw) -> int:
-        comp = self.app.companion
-        self.card(x0, y, cw, 88)
-        self.text(x0 + 18, y + 12, "WALLET", "captionB", "secondary")
-        self.text(x0 + 18, y + 30, fmt.compact(comp.wallet), "num", "label")
-        self.text(x0 + 18 + self.measure(fmt.compact(comp.wallet), "num") + 8, y + 50, "tokens", "sub", "secondary")
-        self.text(x0 + cw - 18, y + 62, "earned since install − spent", "caption", "tertiary", anchor="se")
-        y += 100
-        entries = comp.shop_entries()
-        h = 8 + 68 * len(entries)
-        self.card(x0, y, cw, h)
-        ry = y + 8
-        for i, r in enumerate(entries):
-            self._draw_item_icon(x0 + 34, ry + 34, r["key"])
-            tag = f"buy:{r['key']}"
-            label = fmt.compact(r["price"])
-            bw = max(64, self.measure("Buy?", "captionB") + 24, self.measure(label, "captionB") + 24)
-            bx, by = x0 + cw - 18 - bw, ry + 22
-            self.text(x0 + 66, ry + 12, r["label"], "headline", "label")
-            self.text(x0 + 66, ry + 32, self._ellipsize(r["blurb"], "caption", bx - (x0 + 66) - 10), "caption", "secondary")
-            if r["passive"] and r["owned"]:
-                self.pill(bx + bw - self.measure("Owned", "captionB") - 16, by + 2, "Owned", "green")
-            elif comp.wallet < r["price"]:
-                self.button(bx, by, bw, 26, label, tag, "disabled")
-            elif self.armed and self.armed[0] == tag:
-                self.button(bx, by, bw, 26, "Buy?", tag, "armed")
-            else:
-                self.button(bx, by, bw, 26, label, tag, "tinted")
-            if i < len(entries) - 1:
-                self.sep(x0 + 66, ry + 67, cw - 82)
-            ry += 68
-        y += h + 12
-        self.text(x0 + cw / 2, y, "Tap a price, then tap Buy? to confirm.", "caption", "tertiary", anchor="n")
-        return y + 20
+    def _blurb(self, key: str, full: str) -> str:
+        """Shorter copy on a compact viewport, so a row reflows instead of truncating (§15)."""
+        return SHORT_BLURB.get(key, full) if self.narrow else full
 
+    def _item_cell(self, x, y, w, key: str, label: str, blurb: str, right_top: str,
+                   action: tuple | None, note: str = "") -> float:
+        """One item as a card: icon, name, short description, a value on the right and an action
+        under it. Used by both Shop and Bag so the two pages reflow identically (§7, §8)."""
+        pad = self.pad
+        icon = SPRITE["card"]
+        bh = button_height(self.vw)
+        h = max(icon + 2 * pad, 40 + bh + pad)
+        self.card(x, y, w, h, RADIUS["cell"])
+        self._draw_item_icon(x + pad + icon / 2, y + h / 2, key)
+        tx = x + pad + icon + 12
+        right = x + w - pad
+        # the action decides how much room the text has, so nothing overlaps at any width
+        act_w = 0
+        if action:
+            kind, act_label, style = action
+            act_w = max(72, self.measure(act_label, "captionB") + 26)
+        elif note:
+            act_w = self.measure(note, "captionB") + 6
+        val_w = self.measure(right_top, "headline") + 10
+        text_w = max(40, right - tx - max(act_w, val_w) - 10)
+        self.text(tx, y + pad - 2, self._ellipsize(label, "headline", text_w), "headline", "label")
+        self.text(right, y + pad - 3, right_top, "headline", "label", anchor="ne")
+        self.text(tx, y + pad + 18, self._ellipsize(blurb, "caption", text_w), "caption", "secondary")
+        if action:
+            kind, act_label, style = action
+            self.button(right - act_w, y + h - pad - bh + 2, act_w, bh, act_label, kind, style)
+        elif note:
+            self.text(right, y + h - pad - bh + 8, note, "captionB", "orange", anchor="ne")
+        return y + h
+
+    def draw_shop(self, y, x0, cw) -> int:
+        """Wallet, then the catalogue grouped into sections and laid out as a grid, so a wide
+        window shows several items per row instead of one long narrow column (§7)."""
+        comp = self.app.companion
+        pad = self.pad
+        wallet = comp.wallet
+        # ---- wallet: the caption drops below the number on narrow viewports rather than colliding
+        wtxt = fmt.compact(wallet)
+        num_font = "num" if self.measure(wtxt, "num") < cw * 0.55 else "numSm"
+        h = pad * 2 + 18 + self.F[num_font].metrics("linespace") + (18 if self.narrow else 0)
+        self.card(x0, y, cw, h)
+        self.text(x0 + pad, y + pad - 4, "WALLET", "captionB", "secondary")
+        ny = y + pad + 14
+        self.text(x0 + pad, ny, wtxt, num_font, "label")
+        self.text(x0 + pad + self.measure(wtxt, num_font) + 8,
+                  ny + self.F[num_font].metrics("linespace") - 20, "tokens", "sub", "secondary")
+        caption = "earned since install − spent"
+        if self.narrow:
+            self.text(x0 + pad, ny + self.F[num_font].metrics("linespace") + 2, caption, "caption", "tertiary")
+        else:
+            self.text(x0 + cw - pad, ny + 6, caption, "caption", "tertiary", anchor="ne")
+        y += h + GAP
+
+        entries = {r["key"]: r for r in comp.shop_entries()}
+        cols, cellw = L.grid(cw, 300, max_cols=3)
+        for title, keys in SHOP_SECTIONS:
+            rows = [entries[k] for k in keys if k in entries]
+            if not rows:
+                continue
+            self.text(x0 + 2, y, title, "captionB", "secondary")
+            y += 20
+            cell_h = 0
+            for i, r in enumerate(rows):
+                cx, cy = L.cell_xy(i, cols, cellw, cell_h or 1, x0, y)
+                tag = f"buy:{r['key']}"
+                owned = r["passive"] and r["owned"]
+                short = r["price"] - wallet
+                if owned:
+                    action, note = None, ""
+                elif short > 0:
+                    action, note = None, f"{fmt.compact(short)} short"
+                elif self.armed and self.armed[0] == tag:
+                    action, note = (tag, "Buy?", "armed"), ""
+                else:
+                    action, note = (tag, "Buy", "tinted"), ""
+                bottom = self._item_cell(cx, cy, cellw, r["key"], r["label"],
+                                         self._blurb(r["key"], r["blurb"]), fmt.compact(r["price"]),
+                                         action, note)
+                if owned:
+                    self.pill(cx + cellw - self.pad - self.measure("Owned", "captionB") - 16,
+                              bottom - self.pad - button_height(self.vw) + 4, "Owned", "green")
+                cell_h = bottom - cy
+            y += L.grid_height(len(rows), cols, cell_h) + GAP + 4
+        self.text(x0 + cw / 2, y, "Tap Buy, then tap again to confirm.", "caption", "tertiary", anchor="n")
+        return y + 22
     def _draw_item_icon(self, cx, cy, key: str):
         paths = self.payload["paths"] if self.payload else {}
         if key.startswith("egg:"):
@@ -1376,38 +1661,46 @@ class PokeWindow:
 
     # ------------------------------------------------------------------ bag
     def draw_bag(self, y, x0, cw) -> int:
+        """The same grid as the Shop, so an inventory of one item does not sit alone in a huge
+        viewport and a full one reflows the same way (§8)."""
         comp = self.app.companion
         items = [(k, n) for k, n in comp.state.inventory.items() if n > 0 and k in C.ITEMS]
         if not items:
-            self.card(x0, y, cw, 140)
-            self.text(x0 + cw / 2, y + 52, "Your bag is empty", "title2", "label", anchor="center")
-            self.text(x0 + cw / 2, y + 82, "Buy Rare Candy or a Mint in the Shop.", "caption", "secondary", anchor="center")
-            return y + 152
-        h = 8 + 68 * len(items)
-        self.card(x0, y, cw, h)
-        ry = y + 8
+            h = max(180, min(300, (self.c.winfo_height() or 600) - y - 120))
+            self.card(x0, y, cw, h)
+            self.text(x0 + cw / 2, y + h / 2 - 18, "Your bag is empty", "title2", "label", anchor="center")
+            self.text(x0 + cw / 2, y + h / 2 + 10, "Buy a ball, a candy or a mint in the Shop.",
+                      "caption", "secondary", anchor="center")
+            return y + h + 12
+        self.text(x0 + 2, y, "BAG", "captionB", "secondary")
+        self.text(x0 + cw - 2, y, f"{sum(n for _, n in items)} items", "caption", "tertiary", anchor="ne")
+        y += 20
+        cols, cellw = L.grid(cw, 300, max_cols=3)
+        cell_h = 0
         for i, (k, n) in enumerate(items):
             it = C.ITEMS[k]
-            self._draw_item_icon(x0 + 34, ry + 34, k)
-            bx, by, bw = x0 + cw - 18 - 64, ry + 22, 64
-            self.text(x0 + 66, ry + 12, f"{it['label']}", "headline", "label")
-            self.text(bx - 10, ry + 12, f"×{n}", "headline", "secondary", anchor="ne")
-            self.text(x0 + 66, ry + 32, self._ellipsize(it["blurb"], "caption", bx - (x0 + 66) - 10), "caption", "secondary")
+            cx, cy = L.cell_xy(i, cols, cellw, cell_h or 1, x0, y)
             tag = f"use:{k}"
-            usable = comp.current_encounter() is not None if k in C.BALLS else not comp.is_egg
+            is_ball = k in C.BALLS
+            verb = "Throw" if is_ball else "Use"
+            usable = comp.current_encounter() is not None if is_ball else not comp.is_egg
             if it["passive"]:
-                self.pill(bx + bw - self.measure("Active", "captionB") - 16, by + 2, "Active", "green")
+                action, note = None, ""
             elif not usable:
-                self.button(bx, by, bw, 26, "Throw" if k in C.BALLS else "Use", tag, "disabled")
+                action, note = (tag, verb, "disabled"), ""
             elif self.armed and self.armed[0] == tag:
-                self.button(bx, by, bw, 26, "Use?", tag, "armed")
+                action, note = (tag, verb + "?", "armed"), ""
             else:
-                self.button(bx, by, bw, 26, "Throw" if k in C.BALLS else "Use", tag, "filled")
-            if i < len(items) - 1:
-                self.sep(x0 + 66, ry + 67, cw - 82)
-            ry += 68
-        return y + h + 12
-
+                action, note = (tag, verb, "filled"), ""
+            blurb = self._blurb(k, it["blurb"])
+            if not usable and not it["passive"]:
+                blurb = "no wild Pokémon right now" if is_ball else "hatch your egg first"
+            bottom = self._item_cell(cx, cy, cellw, k, it["label"], blurb, f"×{n}", action, note)
+            if it["passive"]:
+                self.pill(cx + cellw - self.pad - self.measure("Active", "captionB") - 16,
+                          bottom - self.pad - button_height(self.vw) + 4, "Active", "green")
+            cell_h = bottom - cy
+        return y + L.grid_height(len(items), cols, cell_h) + 12
     # --------------------------------------------------------------- battle
     def _battle(self) -> BU.BattleState:
         """The tab's state, created on first use so the tab stays self-contained."""
@@ -1604,7 +1897,7 @@ class PokeWindow:
 
     def _battle_card_rows(self, x, w, cy, card, paths) -> int:
         """One card's summary: sprite, name, level and trainer, type pills, the six stats."""
-        box = LINE_SPRITE
+        box = SPRITE["line"]
         key = BU.sprite_key(card)
         ph = self.img(paths.get(("static",) + key) if key else None, box, "card")
         if ph:
@@ -1629,179 +1922,230 @@ class PokeWindow:
             self.text(cx, cy + 13, str(card["stats"][k]), "headline", "label", anchor="n")
         return cy + 36
 
-    def draw_battle(self, y, x0, cw) -> int:
-        """Battle tab: my card (copy), a challenger card (paste), the arena with depleting HP
-        bars, the fight log, the result banner and the record of the last fights."""
-        st = self._battle()
-        s = self.app.companion.state
+    def _battle_your_card(self, y, x0, cw) -> float:
+        st, s = self._battle(), self.app.companion.state
         paths = self.payload["paths"] if self.payload else {}
         mine = self._battle_my_card()
-
-        # ---- YOUR CARD
+        pad = self.pad
         card = self.card(x0, y, cw, 10)
-        cy = y + 12
-        self.text(x0 + 18, cy, "YOUR CARD", "captionB", "secondary")
+        cy = y + pad - 4
+        self.text(x0 + pad, cy, "YOUR CARD", "captionB", "secondary")
         if mine:
-            self.text(x0 + cw - 18, cy, f"power {B.power_score(mine)}", "caption", "tertiary", anchor="ne")
+            self.text(x0 + cw - pad, cy, f"power {B.power_score(mine)}", "caption", "tertiary", anchor="ne")
         cy += 22
         if s.active is None:
-            self.text(x0 + 18, cy, "Still an egg", "headline", "label")
-            cy += 22
-            for ln in ("A battle card snapshots a hatched Pokémon: name, level, types and stats.",
-                       "Spend tokens to hatch your egg, then copy your card here."):
-                self.text(x0 + 18, cy, self._ellipsize(ln, "caption", cw - 36), "caption", "secondary")
+            self.text(x0 + pad, cy, "Still an egg", "headline", "label")
+            cy += 20
+            for ln in ("A card snapshots a hatched Pokémon.", "Spend tokens to hatch, then copy it here."):
+                self.text(x0 + pad, cy, self._ellipsize(ln, "caption", cw - 2 * pad), "caption", "secondary")
                 cy += 16
             cy += 6
         elif mine is None:
             failed = s.active.current_id in (self.payload or {}).get("meta_failed", set()) and not self.busy
-            self.text(x0 + 18, cy, "Stats unavailable offline — the card needs PokéAPI" if failed else "Loading stats…",
-                      "sub", "tertiary")
-            cy += 28
+            self.text(x0 + pad, cy, "Stats need PokéAPI — offline" if failed else "Loading stats…", "sub", "tertiary")
+            cy += 26
         else:
-            cy = self._battle_card_rows(x0 + 18, cw - 36, cy, mine, paths)
+            cy = self._battle_card_rows(x0 + pad, cw - 2 * pad, cy, mine, paths)
+            bh = button_height(self.vw)
             bw = self.measure("Copy card", "captionB") + 28
-            self._battle_button(x0 + 18, cy, bw, 26, "Copy card", "bt:copy", self._battle_copy, "tinted")
-            self.text(x0 + 18 + bw + 10, cy + 13, self._ellipsize("puts your PT1. token on the clipboard", "caption", cw - 54 - bw),
-                      "caption", "tertiary", anchor="w")
-            cy += 38
+            self._battle_button(x0 + pad, cy, bw, bh, "Copy card", "bt:copy", self._battle_copy, "tinted")
+            self._tooltip("bt:copy", "Copy your PT1 card to the clipboard")
+            if not self.narrow:
+                self.text(x0 + pad + bw + 10, cy + bh / 2, "share it with a colleague", "caption", "tertiary", anchor="w")
+            cy += bh + 8
         self.fit_card(card, x0, y, cw, cy - y)
-        y = cy + 10
+        return cy
 
-        # ---- CHALLENGER
+    def _battle_challenger(self, y, x0, cw) -> float:
+        st, s = self._battle(), self.app.companion.state
+        paths = self.payload["paths"] if self.payload else {}
+        mine = self._battle_my_card()
+        pad = self.pad
         card = self.card(x0, y, cw, 10)
-        cy = y + 12
-        self.text(x0 + 18, cy, "CHALLENGER", "captionB", "secondary")
+        cy = y + pad - 4
+        self.text(x0 + pad, cy, "CHALLENGER", "captionB", "secondary")
         if st.challenger:
-            self.text(x0 + cw - 18, cy, f"power {B.power_score(st.challenger)}", "caption", "tertiary", anchor="ne")
+            self.text(x0 + cw - pad, cy, f"power {B.power_score(st.challenger)}", "caption", "tertiary", anchor="ne")
         cy += 22
-        pw = self.measure("Paste", "captionB") + 28
-        fx, fw, fh = x0 + 18, cw - 36 - pw - 8, 30
-        self.rrect(fx, cy, fx + fw, cy + fh, 9, fill="fill")
-        self.c.create_window(fx + 10, cy + 4, window=self._battle_entry(), anchor="nw", width=max(20, fw - 20), height=fh - 8)
-        self._battle_button(fx + fw + 8, cy + 2, pw, 26, "Paste", "bt:paste", self._battle_paste, "tinted")
+        bh = button_height(self.vw)
+        pw = self.measure("Paste", "captionB") + 26
+        fx, fw, fh = x0 + pad, cw - 2 * pad - pw - 8, max(30, bh)
+        self.rrect(fx, cy, fx + fw, cy + fh, RADIUS["control"], fill="fill")
+        self.c.create_window(fx + 10, cy + 4, window=self._battle_entry(), anchor="nw",
+                             width=max(20, fw - 20), height=fh - 8)
+        self._battle_button(fx + fw + 8, cy + (fh - bh) / 2, pw, bh, "Paste", "bt:paste", self._battle_paste, "tinted")
+        self._tooltip("bt:paste", "Paste a PT1 card from the clipboard")
         cy += fh + 10
         if st.error:
-            self.text(x0 + 18, cy, self._ellipsize("✕ " + st.error, "caption", cw - 36), "caption", "red")
+            self.text(x0 + pad, cy, "✕ " + st.error, "caption", "red")
             cy += 20
         if st.challenger:
-            cy = self._battle_card_rows(x0 + 18, cw - 36, cy, st.challenger, paths)
-            bw = max(84, self.measure("Battle!", "captionB") + 28)
+            cy = self._battle_card_rows(x0 + pad, cw - 2 * pad, cy, st.challenger, paths)
+            bw = max(88, self.measure("Rematch", "captionB") + 28)
             if s.active is None:
-                self._battle_button(x0 + 18, cy, bw, 26, "Battle!", "bt:go", self._battle_start, "disabled")
+                self._battle_button(x0 + pad, cy, bw, bh, "Battle!", "bt:go", self._battle_start, "disabled")
                 hint = "hatch your egg first"
             elif mine is None:
-                self._battle_button(x0 + 18, cy, bw, 26, "Battle!", "bt:go", self._battle_start, "disabled")
+                self._battle_button(x0 + pad, cy, bw, bh, "Battle!", "bt:go", self._battle_start, "disabled")
                 hint = "waiting for your stats"
             elif st.pending:
-                self._battle_button(x0 + 18, cy, bw, 26, "Loading…", "bt:go", self._battle_start, "disabled")
+                self._battle_button(x0 + pad, cy, bw, bh, "Loading…", "bt:go", self._battle_start, "disabled")
                 hint = "fetching the type chart"
             else:
-                self._battle_button(x0 + 18, cy, bw, 26, "Rematch" if st.result else "Battle!", "bt:go", self._battle_start, "filled")
+                self._battle_button(x0 + pad, cy, bw, bh, "Rematch" if st.result else "Battle!", "bt:go",
+                                    self._battle_start, "filled")
                 hint = ""
-            cw_ = self.measure("Clear", "captionB") + 28
-            self._battle_button(x0 + cw - 18 - cw_, cy, cw_, 26, "Clear", "bt:clear", self._battle_clear, "tinted")
-            if hint:
-                self.text(x0 + 18 + bw + 10, cy + 13, hint, "caption", "tertiary", anchor="w")
-            cy += 38
+            clear_w = self.measure("Clear", "captionB") + 26
+            self._battle_button(x0 + cw - pad - clear_w, cy, clear_w, bh, "Clear", "bt:clear", self._battle_clear, "tinted")
+            if hint and not self.narrow:
+                self.text(x0 + pad + bw + 10, cy + bh / 2, hint, "caption", "tertiary", anchor="w")
+            cy += bh + 8
         elif not st.error:
-            self.text(x0 + 18, cy, self._ellipsize("Paste a colleague's PT1. card, then press Battle!", "caption", cw - 36),
-                      "caption", "tertiary")
-            cy += 22
+            for ln in (("Paste a card, then Battle!",) if self.narrow
+                       else ("Paste a colleague's PT1 card, then press Battle!",)):
+                self.text(x0 + pad, cy, ln, "caption", "tertiary")
+                cy += 18
+            cy += 4
         self.fit_card(card, x0, y, cw, cy - y)
-        y = cy + 10
+        return cy
 
-        # ---- ARENA, LOG, RESULT
+    def _battle_arena(self, y, x0, cw) -> float:
+        """The fight itself: two sprites, the HP that is left, and how far through we are."""
+        st = self._battle()
         res = st.result
-        if res and st.mine and st.challenger:
-            hp_a, hp_b = st.schedule[min(st.step, len(st.schedule) - 1)]
-            box = MINI_BOX
-            st.arena_y = y
-            card = self.card(x0, y, cw, 10, tags=("arena",))
-            self.c.tag_bind("arena", "<Button-1>", lambda e: self._battle_finish())
-            if not st.finished:
-                self._hand("arena")
-            cy = y + 12
-            self.text(x0 + 18, cy, "ARENA", "captionB", "secondary", tags=("arena",))
-            shown = min(st.step, len(res["log"]))
-            turn = res["log"][shown - 1].split(":", 1)[0][1:] if shown else "0"
-            self.text(x0 + cw - 18, cy, f"turn {turn} of {res['turns']}" + ("" if st.finished else "  ·  tap to skip"),
-                      "caption", "tertiary", anchor="ne", tags=("arena",))
-            cy += 22
-            half = (cw - 36) / 2
-            lx, rx = x0 + 18 + half / 2, x0 + 18 + half * 1.5
-            self.sprite_draw_box = box
-            self.sprite_subject = ("mon",) + (BU.sprite_key(st.mine) or (0, False))
-            self.sprite_item = self.c.create_image(lx, cy + box / 2, image="", tags=("arena",))
-            key = BU.sprite_key(st.challenger)
-            ph = self._battle_static_img(paths.get(("static",) + key) if key else None, box)
-            if ph:
-                self.c.create_image(rx, cy + box / 2, image=ph, tags=("arena",))
-            else:
-                self.text(rx, cy + box / 2, "?", "title", "tertiary", anchor="center", tags=("arena",))
-            self.text(x0 + 18 + half, cy + box / 2, "VS", "title2", "tertiary", anchor="center", tags=("arena",))
-            cy += box + 4
-            bw = half - 28
-            for cx, c_, hp in ((lx, st.mine, hp_a), (rx, st.challenger, hp_b)):
-                mx = int(c_["stats"]["hp"])
-                self.text(cx, cy, self._ellipsize(c_["name"], "captionB", half - 12), "captionB", "label", anchor="n", tags=("arena",))
-                self.capsule(cx - bw / 2, cy + 20, bw, 8, hp / mx if mx else 0, BU.hp_color(hp / mx if mx else 0))
-                self.text(cx, cy + 32, "fainted" if hp <= 0 else f"{hp} / {mx} HP", "caption", "red" if hp <= 0 else "secondary",
-                          anchor="n", tags=("arena",))
-            cy += 54
-            self.fit_card(card, x0, y, cw, cy - y)
-            y = cy + 10
+        paths = self.payload["paths"] if self.payload else {}
+        pad = self.pad
+        hp_a, hp_b = st.schedule[min(st.step, len(st.schedule) - 1)]
+        box = SPRITE["battle"] if not self.narrow else SPRITE["dex"]
+        st.arena_y = y
+        card = self.card(x0, y, cw, 10, tags=("arena",))
+        self.c.tag_bind("arena", "<Button-1>", lambda e: self._battle_finish())
+        if not st.finished:
+            self._hand("arena")
+        cy = y + pad - 4
+        self.text(x0 + pad, cy, "ARENA", "captionB", "secondary", tags=("arena",))
+        shown = min(st.step, len(res["log"]))
+        turn = res["log"][shown - 1].split(":", 1)[0][1:] if shown else "0"
+        self.text(x0 + cw - pad, cy, f"turn {turn} of {res['turns']}" + ("" if st.finished else " · tap to skip"),
+                  "caption", "tertiary", anchor="ne", tags=("arena",))
+        cy += 22
+        half = (cw - 2 * pad) / 2
+        lx, rx = x0 + pad + half / 2, x0 + pad + half * 1.5
+        self.sprite_draw_box = box
+        self.sprite_subject = ("mon",) + (BU.sprite_key(st.mine) or (0, False))
+        self.sprite_item = self.c.create_image(lx, cy + box / 2, image="", tags=("arena",))
+        key = BU.sprite_key(st.challenger)
+        ph = self._battle_static_img(paths.get(("static",) + key) if key else None, box)
+        if ph:
+            self.c.create_image(rx, cy + box / 2, image=ph, tags=("arena",))
+        else:
+            self.text(rx, cy + box / 2, "?", "title", "tertiary", anchor="center", tags=("arena",))
+        self.text(x0 + pad + half, cy + box / 2, "VS", "title2", "tertiary", anchor="center", tags=("arena",))
+        cy += box + 6
+        bw = min(half - 24, 240)
+        for cx, c_, hp, who in ((lx, st.mine, hp_a, "you"), (rx, st.challenger, hp_b, c_trainer(st.challenger))):
+            mx = int(c_["stats"]["hp"])
+            frac = hp / mx if mx else 0
+            self.text(cx, cy, self._ellipsize(c_["name"], "captionB", half - 12), "captionB", "label",
+                      anchor="n", tags=("arena",))
+            self.text(cx, cy + 16, f"Lv {c_['level']} · {who}", "caption", "tertiary", anchor="n", tags=("arena",))
+            self.capsule(cx - bw / 2, cy + 34, bw, 8, frac, BU.hp_color(frac))
+            self.text(cx, cy + 46, "fainted" if hp <= 0 else f"{hp} / {mx} HP", "caption",
+                      "red" if hp <= 0 else "secondary", anchor="n", tags=("arena",))
+        cy += 68
+        self.fit_card(card, x0, y, cw, cy - y)
+        return cy
 
-            if st.finished:
-                bn = BU.banner(res, st.mine, st.challenger)
-                colr = "green" if bn["won"] else "red"
-                self.rrect(x0, y, x0 + cw, y + 76, 16, fill=_blend(self.P[colr], self.P["card"], 0.82 if not self.dark else 0.7))
-                self.text(x0 + cw / 2, y + 10, bn["title"], "title2", colr, anchor="n")
-                self.text(x0 + cw / 2, y + 36, self._ellipsize(bn["detail"], "caption", cw - 24), "caption", "label", anchor="n")
-                self.text(x0 + cw / 2, y + 54, bn["power"], "caption", "secondary", anchor="n")
-                y += 76 + 10
+    def _battle_banner(self, y, x0, cw) -> float:
+        st = self._battle()
+        bn = BU.banner(st.result, st.mine, st.challenger, side=0)
+        colr = "green" if bn["won"] else "red"
+        pad = self.pad
+        lines = [bn["detail"], bn["power"]]
+        h = 12 + self.F["title2"].metrics("linespace") + 4 + 18 * len(lines) + 12
+        self.rrect(x0, y, x0 + cw, y + h, RADIUS["card"],
+                   fill=_blend(self.P[colr], self.P["card"], 0.82 if not self.dark else 0.7))
+        self.text(x0 + cw / 2, y + 10, bn["title"], "title2", colr, anchor="n")
+        ly = y + 12 + self.F["title2"].metrics("linespace")
+        for i, ln in enumerate(lines):
+            self.text(x0 + cw / 2, ly, self._ellipsize(ln, "caption", cw - 2 * pad), "caption",
+                      "label" if i == 0 else "secondary", anchor="n")
+            ly += 18
+        return y + h
 
-            lines = res["log"][max(0, shown - 6):shown]
-            h = 12 + 20 + 17 * max(1, len(lines)) + 10
-            self.card(x0, y, cw, h)
-            self.text(x0 + 18, y + 12, "BATTLE LOG", "captionB", "secondary")
-            self.text(x0 + cw - 18, y + 12, f"{shown} of {len(res['log'])} hits", "caption", "tertiary", anchor="ne")
-            ly = y + 32
-            if not lines:
-                self.text(x0 + 18, ly, "The fight begins…", "caption", "tertiary")
-            for ln in lines:
-                left, right = BU.hit_row(ln)
-                rw = self.measure(right, "caption") + 8 if right else 0
-                if right:
-                    self.text(x0 + cw - 18, ly, right, "caption", "tertiary", anchor="ne")
-                self.text(x0 + 18, ly, self._ellipsize(left, "caption", cw - 36 - rw), "caption",
-                          "label" if BU.is_own_hit(ln, st.mine["name"]) else "secondary")
-                ly += 17
-            y += h + 10
+    def _battle_log(self, y, x0, cw) -> float:
+        st = self._battle()
+        res = st.result
+        pad = self.pad
+        shown = min(st.step, len(res["log"]))
+        keep = 6 if self.narrow else 10
+        rows = BU.log_rows(res, "You", c_trainer(st.challenger))[max(0, shown - keep):shown]
+        h = pad + 18 + 17 * max(1, len(rows)) + pad
+        self.card(x0, y, cw, h)
+        self.text(x0 + pad, y + pad - 4, "BATTLE LOG", "captionB", "secondary")
+        self.text(x0 + cw - pad, y + pad - 4, f"{shown} of {len(res['log'])} hits", "caption", "tertiary", anchor="ne")
+        ly = y + pad + 16
+        if not rows:
+            self.text(x0 + pad, ly, "The fight begins…", "caption", "tertiary")
+        for left, right, mine in rows:
+            rw = self.measure(right, "caption") + 8 if right else 0
+            if right:
+                self.text(x0 + cw - pad, ly, right, "caption", "tertiary", anchor="ne")
+            self.text(x0 + pad, ly, self._ellipsize(left, "caption", cw - 2 * pad - rw), "caption",
+                      "label" if mine else "secondary")
+            ly += 17
+        return y + h
 
-        # ---- RECORD
+    def _battle_record(self, y, x0, cw) -> float:
+        st = self._battle()
+        pad = self.pad
         if st.history is None:
             st.history = BU.load_history(self.app.dir)
         rows = list(reversed(st.history))
         wins, losses = BU.tally(st.history)
-        h = 12 + 22 + (38 * len(rows) if rows else 22) + 6
+        rh = row_height(self.vw) - 6
+        h = pad + 22 + (rh * len(rows) if rows else 22) + 6
         self.card(x0, y, cw, h)
-        self.text(x0 + 18, y + 12, "RECORD", "captionB", "secondary")
-        self.text(x0 + cw - 18, y + 12, f"{wins} W · {losses} L", "captionB", "label", anchor="ne")
-        ry = y + 34
+        self.text(x0 + pad, y + pad - 4, "RECORD", "captionB", "secondary")
+        self.text(x0 + cw - pad, y + pad - 4, f"{wins} W · {losses} L", "captionB", "label", anchor="ne")
+        ry = y + pad + 18
         if not rows:
-            self.text(x0 + 18, ry, "No battles yet", "sub", "tertiary")
+            self.text(x0 + pad, ry, "No battles yet", "sub", "tertiary")
         for i, r in enumerate(rows):
-            self.dot(x0 + 22, ry + 9, 3.5, "green" if r.get("won") else "red")
-            right = f"{'won' if r.get('won') else 'lost'} · {r.get('turns', '?')} turns · {r.get('date', '')}"
-            self.text(x0 + cw - 18, ry + 1, right, "caption", "secondary", anchor="ne")
+            self.dot(x0 + pad + 4, ry + 9, 3.5, "green" if r.get("won") else "red")
+            right = (f"{r.get('turns', '?')} turns" if self.narrow else
+                     f"{'won' if r.get('won') else 'lost'} · {r.get('turns', '?')} turns · {r.get('date', '')}")
+            self.text(x0 + cw - pad, ry + 1, right, "caption", "secondary", anchor="ne")
             left = f"{r.get('opponent', '?')} · {r.get('trainer', '?')}"
-            self.text(x0 + 32, ry, self._ellipsize(left, "body", cw - 60 - self.measure(right, "caption")), "body", "label")
+            self.text(x0 + pad + 14, ry, self._ellipsize(left, "body", cw - 2 * pad - 24 - self.measure(right, "caption")),
+                      "body", "label")
             if i < len(rows) - 1:
-                self.sep(x0 + 18, ry + 30, cw - 36)
-            ry += 38
-        return y + h + 12
+                self.sep(x0 + pad, ry + rh - 8, cw - 2 * pad)
+            ry += rh
+        return y + h
 
-    # -------------------------------------------------------------- compact
+    def draw_battle(self, y, x0, cw) -> int:
+        """Battle leads with whatever matters now: the arena once a fight exists, the two cards
+        while one is being set up. Wide viewports put the cards side by side (§9)."""
+        st = self._battle()
+        fighting = bool(st.result and st.mine and st.challenger)
+        cols = 2 if (cw >= 720 and not self.narrow) else 1
+        colw = (cw - GAP) / 2 if cols == 2 else cw
+
+        if fighting:
+            y = self._battle_arena(y, x0, cw) + GAP
+            if st.finished:
+                y = self._battle_banner(y, x0, cw) + GAP
+        if cols == 2:
+            left = self._battle_your_card(y, x0, colw)
+            right = self._battle_challenger(y, x0 + colw + GAP, colw)
+            y = max(left, right) + GAP
+        else:
+            y = self._battle_your_card(y, x0, cw) + GAP
+            y = self._battle_challenger(y, x0, cw) + GAP
+        if fighting:
+            y = self._battle_log(y, x0, cw) + GAP
+        return self._battle_record(y, x0, cw) + 12    # -------------------------------------------------------------- compact
     def draw_compact(self, w) -> int:
         comp, s = self.app.companion, self.app.companion.state
         snap = self.payload["snap"] if self.payload else None
@@ -1836,10 +2180,10 @@ class PokeWindow:
         return y + 20
 
     def draw_footer(self, y, x0, cw) -> int:
-        self.text(x0 + cw / 2, y + 6, f"auto-refresh every {self.interval} s  ·  Claude Code", "caption", "tertiary", anchor="n")
+        """Product status only. Build details live in the ⋯ menu under About (§16)."""
+        self.text(x0 + cw / 2, y + 6, f"auto-refresh every {self.interval} s", "caption", "tertiary", anchor="n")
         self.c.bind("<Button-3>", self._show_menu)
-        return y + 30
-
+        return y + 28
     # ------------------------------------------------------------- animation
     def _start_sprite_animation(self) -> None:
         if self.sprite_item is None:
